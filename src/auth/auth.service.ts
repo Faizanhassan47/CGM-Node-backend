@@ -221,7 +221,10 @@ export class AuthService {
       port,
       secure,
       auth: user && pass ? { user, pass } : undefined,
-      tls: { rejectUnauthorized: true },
+      tls: {
+        rejectUnauthorized: false,
+        servername: this.config.get<string>('SMTP_TLS_SERVERNAME') || host,
+      },
       connectionTimeout: 15000,
     });
   }

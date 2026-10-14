@@ -10,7 +10,7 @@ class ProfileDto {
   @IsOptional() @IsString() phoneNumber?: string;
   @IsOptional() @IsDateString() dateOfBirth?: string;
   @IsOptional() @IsString() gender?: string;
-  @IsString() preferredGlucoseUnit!: string;
+  @IsOptional() @IsString() preferredGlucoseUnit?: string;
   @IsOptional() @IsString() theme = 'System';
   @IsOptional() @IsString() language = 'English';
   @IsOptional() @IsNumber() targetLow?: number;
@@ -46,6 +46,7 @@ export class ProfileController {
       email: user.email,
       phoneNumber: p.phoneNumber,
       dateOfBirth: p.dateOfBirth,
+      gender: p.gender,
       preferredGlucoseUnit: p.preferredGlucoseUnit,
       profileCompleted: p.profileCompleted,
       theme: p.theme,
@@ -76,7 +77,7 @@ export class ProfileController {
       phoneNumber: dto.phoneNumber ?? null,
       dateOfBirth: dto.dateOfBirth ?? null,
       gender: dto.gender ?? null,
-      preferredGlucoseUnit: dto.preferredGlucoseUnit,
+      preferredGlucoseUnit: dto.preferredGlucoseUnit ?? profile.preferredGlucoseUnit ?? 'mg/dL',
       theme: dto.theme,
       language: dto.language,
       targetLow: dto.targetLow != null ? dto.targetLow : (profile.targetLow ?? 90.0),
@@ -96,4 +97,3 @@ export class ProfileController {
     return this.view(user, profile);
   }
 }
-
