@@ -371,13 +371,16 @@ export class AuthService {
         console.log(
           `[AUTH-GOOGLE] User created successfully: id=${user.id}, email=${user.email}`,
         );
-        this.sendWelcomeEmail(
-          user.fullName,
-          user.email,
-          user.referralCode,
-        ).catch((e) => {
-          console.warn("[AUTH-GOOGLE] Welcome email error:", e.message);
-        });
+        // Only welcome users who actually finished sign-up. If the profile
+        // step is still pending (user may cancel), the email is sent later
+        // when the profile is completed.
+        if (hasPatientInfo) {
+          void this.sendWelcomeEmail(
+            user.fullName,
+            user.email,
+            user.referralCode,
+          );
+        }
       } catch (dbErr: any) {
         console.error(
           "[AUTH-GOOGLE] DB save error while creating new user:",
@@ -412,6 +415,7 @@ export class AuthService {
       // Update patient profile if additional info was provided during social login
       const profile = await this.profiles.findOneBy({ userId: user.id });
       if (profile) {
+        const wasCompleted = profile.profileCompleted;
         let changed = false;
         if (dto.phoneNumber?.trim() && !profile.phoneNumber) {
           profile.phoneNumber = dto.phoneNumber.trim();
@@ -436,6 +440,13 @@ export class AuthService {
         if (changed) {
           profile.updatedAt = new Date();
           await this.profiles.save(profile);
+        }
+        if (!wasCompleted && profile.profileCompleted) {
+          void this.sendWelcomeEmail(
+            user.fullName,
+            user.email,
+            user.referralCode,
+          );
         }
       }
     }
@@ -464,7 +475,8 @@ export class AuthService {
     });
   }
 
-  private async sendWelcomeEmail(
+  /** Sends the welcome email. Never throws; failures are logged. */
+  async sendWelcomeEmail(
     fullName: string,
     email: string,
     familyCode?: string | null,

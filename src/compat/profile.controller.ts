@@ -11,6 +11,7 @@ import {
 import { Repository } from "typeorm";
 import { AuthUser, CurrentUser } from "../common/auth-user";
 import { PatientProfile, User } from "../database/entities";
+import { AuthService } from "../auth/auth.service";
 
 class ProfileDto {
   @IsString() fullName!: string;
@@ -39,6 +40,7 @@ export class ProfileController {
     @InjectRepository(User) private users: Repository<User>,
     @InjectRepository(PatientProfile)
     private profiles: Repository<PatientProfile>,
+    private readonly auth: AuthService,
   ) {}
 
   private async get(userId: number) {
@@ -84,6 +86,7 @@ export class ProfileController {
   @Put()
   async update(@CurrentUser() u: AuthUser, @Body() dto: ProfileDto) {
     const { user, profile } = await this.get(u.sub);
+    const wasCompleted = profile.profileCompleted;
     Object.assign(profile, {
       phoneNumber:
         dto.phoneNumber !== undefined
@@ -132,6 +135,13 @@ export class ProfileController {
       updatedAt: new Date(),
     });
     await Promise.all([this.profiles.save(profile), this.users.save(user)]);
+    if (!wasCompleted) {
+      void this.auth.sendWelcomeEmail(
+        user.fullName,
+        user.email,
+        user.referralCode,
+      );
+    }
     return this.view(user, profile);
   }
 }
