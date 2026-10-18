@@ -123,6 +123,7 @@ export class AuthService {
         fullName: user.fullName,
         email: user.email,
         authProvider: user.authProvider,
+        hasPassword: Boolean(user.passwordHash),
         emailVerified: user.emailVerified,
         profileCompleted: profile?.profileCompleted ?? false,
         preferredGlucoseUnit: profile?.preferredGlucoseUnit ?? "mg/dL",
@@ -229,14 +230,24 @@ export class AuthService {
   }
   async changePassword(userId: number, dto: ChangePasswordDto) {
     const user = await this.users.findOneByOrFail({ id: userId });
-    if (!this.verify(dto.currentPassword, user.passwordHash))
+    const isSettingFirstPassword = !user.passwordHash;
+    if (
+      !isSettingFirstPassword &&
+      (!dto.currentPassword ||
+        !this.verify(dto.currentPassword, user.passwordHash))
+    )
       throw new BadRequestException({
         message: "Current password is incorrect.",
       });
     user.passwordHash = this.hash(dto.newPassword);
     user.tokenVersion += 1;
     await this.users.save(user);
-    return { message: "Password changed successfully." };
+    return {
+      message: isSettingFirstPassword
+        ? "Password set successfully."
+        : "Password changed successfully.",
+      hasPassword: true,
+    };
   }
   async social(dto: SocialDto) {
     console.log(

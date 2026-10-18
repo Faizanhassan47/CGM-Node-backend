@@ -57,6 +57,8 @@ export class ProfileController {
     return {
       fullName: user.fullName,
       email: user.email,
+      authProvider: user.authProvider,
+      hasPassword: Boolean(user.passwordHash),
       phoneNumber: p.phoneNumber,
       dateOfBirth: p.dateOfBirth,
       gender: p.gender,

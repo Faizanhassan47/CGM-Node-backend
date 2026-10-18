@@ -30,7 +30,7 @@ export class RefreshDto {
   @IsString() refreshToken!: string;
 }
 export class ChangePasswordDto {
-  @IsString() currentPassword!: string;
+  @IsOptional() @IsString() currentPassword?: string;
   @MinLength(6) newPassword!: string;
 }
 export class SocialDto {
