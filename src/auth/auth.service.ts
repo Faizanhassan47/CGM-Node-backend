@@ -7,7 +7,7 @@ import { ConfigService } from "@nestjs/config";
 import { JwtService } from "@nestjs/jwt";
 import { InjectRepository } from "@nestjs/typeorm";
 import { pbkdf2Sync, randomBytes, timingSafeEqual } from "crypto";
-import { Repository } from "typeorm";
+import { EntityManager, Repository } from "typeorm";
 import * as nodemailer from "nodemailer";
 import { PatientProfile, User } from "../database/entities";
 import {
@@ -56,6 +56,42 @@ export class AuthService {
       expected.length === actual.length && timingSafeEqual(expected, actual)
     );
   }
+
+  private async anonymizeDeletedAccount(userId: number) {
+    await this.users.manager.transaction((manager) =>
+      this.anonymizeDeletedAccountWithManager(manager, userId),
+    );
+  }
+
+  private async anonymizeDeletedAccountWithManager(
+    manager: EntityManager,
+    userId: number,
+  ) {
+    const deletedEmail = `deleted+${userId}@deleted.invalid`;
+    await manager.query(
+      normalizeSql(
+        `UPDATE Users
+           SET FullName=?, Email=?, PasswordHash=NULL, GoogleSubjectId=NULL,
+               AppleSubjectId=NULL, LastLoginDeviceId=NULL,
+               LastLoginDeviceInfo=NULL, ReferralCode=NULL, IsActive=0,
+               TokenVersion=TokenVersion+1, UpdatedAt=UTC_TIMESTAMP()
+           WHERE Id=?`,
+        this.users.manager.connection,
+      ),
+      ["Deleted User", deletedEmail, userId],
+    );
+    await manager.query(
+      normalizeSql(
+        `UPDATE PatientProfile
+           SET PhoneNumber=NULL, DateOfBirth=NULL, Gender=NULL,
+               UpdatedAt=UTC_TIMESTAMP()
+           WHERE UserId=?`,
+        this.users.manager.connection,
+      ),
+      [userId],
+    );
+  }
+
   private async response(user: User, deviceId?: string) {
     const profile = await this.profiles.findOneBy({ userId: user.id });
     const common = { sub: String(user.id), device_id: deviceId ?? "unknown" };
@@ -97,19 +133,15 @@ export class AuthService {
   async register(dto: RegisterDto) {
     const email = dto.email.trim().toLowerCase();
     console.log(`[AUTH] Register request received for: ${email}`);
-    let existing = await this.users.findOne({ where: { email } });
+    const existing = await this.users.findOne({ where: { email } });
     if (existing) {
       if (existing.isActive) {
         throw new BadRequestException({
           message:
             "An account with this email already exists. Please log in instead.",
         });
-      } else {
-        throw new UnauthorizedException({
-          message:
-            "This account has been deleted or deactivated. Please contact support.",
-        });
       }
+      await this.anonymizeDeletedAccount(existing.id);
     }
 
     const user = await this.users.save(
@@ -160,7 +192,7 @@ export class AuthService {
     if (!user.isActive) {
       throw new UnauthorizedException({
         message:
-          "This account has been deleted or deactivated. Please contact support.",
+          "This account was deleted and cannot sign in. Create a new account to use this email again.",
       });
     }
     user.lastLoginAt = new Date();
@@ -286,16 +318,23 @@ export class AuthService {
       where: [{ googleSubjectId: google.sub }, { email }],
     });
 
+    if (user && !user.isActive) {
+      await this.anonymizeDeletedAccount(user.id);
+      user = null;
+    }
+
     if (!user) {
       console.log(`[AUTH-GOOGLE] Creating new user for ${email}...`);
       try {
+        const resolvedName = (
+          dto.fullName ||
+          google.name ||
+          email.split("@")[0]
+        ).trim();
+
         user = await this.users.save(
           this.users.create({
-            fullName: (
-              google.name ||
-              dto.fullName ||
-              email.split("@")[0]
-            ).trim(),
+            fullName: resolvedName,
             email,
             passwordHash: null,
             authProvider: "Google",
@@ -311,13 +350,20 @@ export class AuthService {
           }),
         );
 
+        const hasPatientInfo = Boolean(
+          dto.phoneNumber?.trim() || dto.dateOfBirth
+        );
+
         await this.profiles.save(
           this.profiles.create({
             userId: user.id,
-            preferredGlucoseUnit: "mg/dL",
+            phoneNumber: dto.phoneNumber?.trim() || null,
+            dateOfBirth: dto.dateOfBirth ?? null,
+            gender: dto.gender ?? null,
+            preferredGlucoseUnit: dto.preferredGlucoseUnit || "mg/dL",
             language: "English",
             theme: "System",
-            profileCompleted: false,
+            profileCompleted: hasPatientInfo,
             createdAt: new Date(),
           }),
         );
@@ -345,12 +391,6 @@ export class AuthService {
       console.log(
         `[AUTH-GOOGLE] Existing user logged in: id=${user.id}, email=${user.email}, isActive=${user.isActive}`,
       );
-      if (!user.isActive) {
-        throw new UnauthorizedException({
-          message:
-            "This account has been deleted or deactivated. Please contact support.",
-        });
-      }
       if (user.googleSubjectId && user.googleSubjectId !== google.sub) {
         console.log(
           `[AUTH-GOOGLE] Updating googleSubjectId from ${user.googleSubjectId} to ${google.sub}`,
@@ -364,7 +404,40 @@ export class AuthService {
         lastLoginDeviceId: dto.deviceId ?? user.lastLoginDeviceId,
         lastLoginDeviceInfo: dto.deviceInfo ?? user.lastLoginDeviceInfo,
       });
+      if (dto.fullName?.trim() && (!user.fullName || user.fullName === email.split("@")[0])) {
+        user.fullName = dto.fullName.trim();
+      }
       await this.users.save(user);
+
+      // Update patient profile if additional info was provided during social login
+      const profile = await this.profiles.findOneBy({ userId: user.id });
+      if (profile) {
+        let changed = false;
+        if (dto.phoneNumber?.trim() && !profile.phoneNumber) {
+          profile.phoneNumber = dto.phoneNumber.trim();
+          changed = true;
+        }
+        if (dto.dateOfBirth && !profile.dateOfBirth) {
+          profile.dateOfBirth = dto.dateOfBirth;
+          changed = true;
+        }
+        if (dto.gender && !profile.gender) {
+          profile.gender = dto.gender;
+          changed = true;
+        }
+        if (dto.preferredGlucoseUnit && !profile.preferredGlucoseUnit) {
+          profile.preferredGlucoseUnit = dto.preferredGlucoseUnit;
+          changed = true;
+        }
+        if (dto.phoneNumber?.trim() || dto.dateOfBirth) {
+          profile.profileCompleted = true;
+          changed = true;
+        }
+        if (changed) {
+          profile.updatedAt = new Date();
+          await this.profiles.save(profile);
+        }
+      }
     }
 
     return this.response(user, dto.deviceId);
@@ -573,13 +646,6 @@ export class AuthService {
     await this.users.manager.transaction(async (m) => {
       await m.query(
         normalizeSql(
-          "UPDATE Users SET IsActive=0,TokenVersion=TokenVersion+1,UpdatedAt=UTC_TIMESTAMP() WHERE Id=?",
-          this.users.manager.connection,
-        ),
-        [userId],
-      );
-      await m.query(
-        normalizeSql(
           'UPDATE CGMDevices SET IsActive=0,ConnectionStatus="Disconnected",UpdatedAt=UTC_TIMESTAMP() WHERE UserId=?',
           this.users.manager.connection,
         ),
@@ -592,6 +658,7 @@ export class AuthService {
         ),
         [userId],
       );
+      await this.anonymizeDeletedAccountWithManager(m, userId);
     });
     console.log(`[AUTH] Account successfully deleted for userId: ${userId}`);
     return { success: true, message: "Account deleted successfully." };

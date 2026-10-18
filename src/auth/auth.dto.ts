@@ -37,6 +37,12 @@ export class SocialDto {
   @IsString() idToken!: string;
   @IsString() provider!: string;
   @IsOptional() @IsString() fullName?: string;
+  @IsOptional() @IsString() phoneNumber?: string;
+  @IsOptional() @IsDateString() dateOfBirth?: string;
+  @IsOptional()
+  @IsIn(["Male", "Female", "Other", "Prefer not to say"])
+  gender?: string;
+  @IsOptional() @IsString() preferredGlucoseUnit?: string;
   @IsOptional() @IsString() deviceInfo?: string;
   @IsOptional() @IsString() deviceId?: string;
 }
