@@ -351,7 +351,7 @@ export class AuthService {
         );
 
         const hasPatientInfo = Boolean(
-          dto.phoneNumber?.trim() || dto.dateOfBirth
+          dto.phoneNumber?.trim() || dto.dateOfBirth,
         );
 
         await this.profiles.save(
@@ -407,7 +407,10 @@ export class AuthService {
         lastLoginDeviceId: dto.deviceId ?? user.lastLoginDeviceId,
         lastLoginDeviceInfo: dto.deviceInfo ?? user.lastLoginDeviceInfo,
       });
-      if (dto.fullName?.trim() && (!user.fullName || user.fullName === email.split("@")[0])) {
+      if (
+        dto.fullName?.trim() &&
+        (!user.fullName || user.fullName === email.split("@")[0])
+      ) {
         user.fullName = dto.fullName.trim();
       }
       await this.users.save(user);
@@ -482,7 +485,7 @@ export class AuthService {
     familyCode?: string | null,
   ): Promise<void> {
     const fromName = (
-      this.config.get<string>("SMTP_FROM_NAME") || "GlucoTrack CGM Platform"
+      this.config.get<string>("SMTP_FROM_NAME") || "Circle CGM"
     ).replace(/"/g, "");
     const fromEmail =
       this.config.get<string>("SMTP_FROM_EMAIL") || "cgm@gms-world.co";
@@ -494,8 +497,8 @@ export class AuthService {
       await transporter.sendMail({
         from: `"${fromName}" <${fromEmail}>`,
         to: email,
-        subject: `Welcome to Aima! Your Family Code is ${activeCode}`,
-        text: `Welcome to Aima, ${fullName}!\n\nYour account has been successfully created.\nYour Family & Caregiver Code is: ${activeCode}\nShare this code with your family members and caregivers so they can follow your glucose readings in real-time.\n\nBest regards,\nGlucoTrack Support`,
+        subject: `Welcome to Circle! Your Family Code is ${activeCode}`,
+        text: `Welcome to Circle, ${fullName}!\n\nYour account has been successfully created.\nYour Family & Caregiver Code is: ${activeCode}\nShare this code only with trusted family members, clinicians, or caregivers you want to invite.\n\nBest regards,\nCircle Support`,
         html: buildWelcomeEmailHtml({
           fullName,
           recipientEmail: email,
@@ -515,7 +518,7 @@ export class AuthService {
 
   private async sendResetEmail(email: string, otp: string): Promise<void> {
     const fromName = (
-      this.config.get<string>("SMTP_FROM_NAME") || "GlucoTrack CGM Platform"
+      this.config.get<string>("SMTP_FROM_NAME") || "Circle CGM"
     ).replace(/"/g, "");
     const fromEmail =
       this.config.get<string>("SMTP_FROM_EMAIL") || "cgm@gms-world.co";
@@ -525,8 +528,8 @@ export class AuthService {
       await transporter.sendMail({
         from: `"${fromName}" <${fromEmail}>`,
         to: email,
-        subject: `${otp} is your Aima Password Reset Code`,
-        text: `Hello,\n\nYour password reset code is: ${otp}\n\nThis 6-digit verification code expires in 15 minutes.\nIf you did not request a password reset, please ignore this email.\n\nBest regards,\nAima Support`,
+        subject: `${otp} is your Circle password reset code`,
+        text: `Hello,\n\nYour Circle password reset code is: ${otp}\n\nThis 6-digit verification code expires in 15 minutes. Never share it with anyone.\nIf you did not request a password reset, please ignore this email.\n\nBest regards,\nCircle Support`,
         html: buildPasswordResetEmailHtml({
           otp,
           recipientEmail: email,

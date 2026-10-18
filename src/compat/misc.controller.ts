@@ -216,7 +216,7 @@ export class AdminController {
 
   private checkAdmin(u: AuthUser) {
     const adminEmails = (
-      process.env.ADMIN_EMAILS || "admin@aima.com,admin@gms-world.co"
+      process.env.ADMIN_EMAILS || "admin@circle.com,admin@gms-world.co"
     )
       .split(",")
       .map((e) => e.trim().toLowerCase());

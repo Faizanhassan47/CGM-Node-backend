@@ -93,7 +93,7 @@ export class ReportsController {
 
     return {
       userId,
-      patientName: users[0].FullName || "Aima Patient",
+      patientName: users[0].FullName || "Circle Patient",
       patientEmail: users[0].Email,
       dateRange: `${start.toDateString()} – ${end.toDateString()}`,
       startDate: start,
