@@ -1,3 +1,5 @@
+import { CIRCLE_MARK_PNG_BASE64 } from "./circle-logo-base64";
+
 /** Email-safe Circle templates using table layouts and inline styles. */
 function escapeHtml(value: string): string {
   const entities: Record<string, string> = {
@@ -36,7 +38,9 @@ function emailShell(params: {
             <td align="center" style="background-color:#FF5A43;padding:30px 24px;">
               <table role="presentation" cellspacing="0" cellpadding="0" border="0">
                 <tr>
-                  <td align="center" valign="middle" style="width:68px;height:68px;background-color:#FFFFFF;border-radius:34px;color:#FF5A43;font-size:15px;font-weight:800;letter-spacing:0.4px;">CIRCLE</td>
+                  <td align="center" valign="middle" style="width:72px;height:72px;background-color:#FFFFFF;border-radius:36px;padding:6px;box-sizing:border-box;">
+                    <img src="${CIRCLE_MARK_PNG_BASE64}" alt="Circle" width="56" height="56" style="display:block;width:56px;height:56px;border-radius:28px;object-fit:contain;margin:0 auto;" />
+                  </td>
                 </tr>
               </table>
               <h1 style="margin:16px 0 6px;color:#FFFFFF;font-size:24px;line-height:1.25;font-weight:750;letter-spacing:-0.3px;">${params.title}</h1>

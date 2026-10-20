@@ -1,4 +1,15 @@
-import { Body, Controller, Get, NotFoundException, Put } from "@nestjs/common";
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  NotFoundException,
+  Post,
+  Put,
+  UploadedFile,
+  UseInterceptors,
+} from "@nestjs/common";
+import { FileInterceptor } from "@nestjs/platform-express";
 import { InjectRepository } from "@nestjs/typeorm";
 import {
   IsBoolean,
@@ -12,6 +23,7 @@ import { Repository } from "typeorm";
 import { AuthUser, CurrentUser } from "../common/auth-user";
 import { PatientProfile, User } from "../database/entities";
 import { AuthService } from "../auth/auth.service";
+import { StorageService } from "../common/storage.service";
 
 class ProfileDto {
   @IsString() fullName!: string;
@@ -20,6 +32,7 @@ class ProfileDto {
   @IsOptional()
   @IsIn(["Male", "Female", "Other", "Prefer not to say"])
   gender?: string;
+  @IsOptional() @IsString() profilePictureUrl?: string;
   @IsOptional() @IsString() preferredGlucoseUnit?: string;
   @IsOptional() @IsString() theme = "System";
   @IsOptional() @IsString() language = "English";
@@ -41,6 +54,7 @@ export class ProfileController {
     @InjectRepository(PatientProfile)
     private profiles: Repository<PatientProfile>,
     private readonly auth: AuthService,
+    private readonly storage: StorageService,
   ) {}
 
   private async get(userId: number) {
@@ -62,6 +76,7 @@ export class ProfileController {
       phoneNumber: p.phoneNumber,
       dateOfBirth: p.dateOfBirth,
       gender: p.gender,
+      profilePictureUrl: p.profilePictureUrl,
       preferredGlucoseUnit: p.preferredGlucoseUnit,
       profileCompleted: p.profileCompleted,
       theme: p.theme,
@@ -76,6 +91,32 @@ export class ProfileController {
       nightHighThreshold: Number(p.nightHighThreshold ?? 160.0),
       nightAlertsEnabled: p.nightAlertsEnabled ?? true,
       referralCode: user.referralCode ?? "",
+    };
+  }
+
+  @Post("picture")
+  @UseInterceptors(FileInterceptor("file"))
+  async uploadPicture(
+    @CurrentUser() u: AuthUser,
+    @UploadedFile() file?: { buffer: Buffer; mimetype: string; originalname: string },
+  ) {
+    if (!file || !file.buffer) {
+      throw new BadRequestException({ message: "No file provided for upload." });
+    }
+    const ext = file.originalname.split(".").pop() || "jpg";
+    const key = `avatars/user_${u.sub}_${Date.now()}.${ext}`;
+    const url = await this.storage.uploadFile(key, file.buffer, file.mimetype);
+
+    const { user, profile } = await this.get(u.sub);
+    profile.profilePictureUrl = url;
+    profile.updatedAt = new Date();
+    user.profilePictureUrl = url;
+    user.updatedAt = new Date();
+    await Promise.all([this.profiles.save(profile), this.users.save(user)]);
+
+    return {
+      profilePictureUrl: url,
+      profile: this.view(user, profile),
     };
   }
 
@@ -99,6 +140,10 @@ export class ProfileController {
           ? dto.dateOfBirth || null
           : profile.dateOfBirth,
       gender: dto.gender !== undefined ? dto.gender || null : profile.gender,
+      profilePictureUrl:
+        dto.profilePictureUrl !== undefined
+          ? dto.profilePictureUrl || null
+          : profile.profilePictureUrl,
       preferredGlucoseUnit:
         dto.preferredGlucoseUnit ?? profile.preferredGlucoseUnit ?? "mg/dL",
       theme: dto.theme,

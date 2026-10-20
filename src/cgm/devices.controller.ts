@@ -14,10 +14,20 @@ export class DevicesController {
   @Get(':id') async one(@CurrentUser() u: AuthUser, @Param('id') id: string) { return this.view(await this.owned(Number(id), u.sub)); }
   @Post('register') async register(@CurrentUser() u: AuthUser, @Body() dto: RegisterDeviceDto) {
     let device = dto.serialNumber ? await this.devices.findOneBy({ serialNumber: dto.serialNumber }) : null;
-    if (device && device.userId !== u.sub) throw new ForbiddenException();
-    device ??= this.devices.create({ userId: u.sub, createdAt: new Date() });
-    Object.assign(device, dto, { userId: u.sub, connectionStatus: 'Connected', lastConnectedAt: new Date(), lastCommunicationAt: new Date(), isActive: true, updatedAt: device.id ? new Date() : null });
-    try { return this.view(await this.devices.save(device)); } catch { throw new ConflictException({ message: 'Device could not be registered.' }); }
+    device ??= this.devices.create({ createdAt: new Date() });
+    Object.assign(device, dto, {
+      userId: u.sub,
+      connectionStatus: 'Connected',
+      lastConnectedAt: new Date(),
+      lastCommunicationAt: new Date(),
+      isActive: true,
+      updatedAt: device.id ? new Date() : null,
+    });
+    try {
+      return this.view(await this.devices.save(device));
+    } catch {
+      throw new ConflictException({ message: 'Device could not be registered.' });
+    }
   }
   @Put(':id') update(@CurrentUser() u: AuthUser, @Param('id') id: string, @Body() dto: UpdateDeviceDto) { return this.updateStatus(u, id, dto); }
   @Put(':id/status') async updateStatus(@CurrentUser() u: AuthUser, @Param('id') id: string, @Body() dto: UpdateDeviceDto) { const d = await this.owned(Number(id), u.sub); Object.assign(d, dto, { lastCommunicationAt: new Date(), updatedAt: new Date() }); await this.devices.save(d); return { message: 'Status updated.' }; }

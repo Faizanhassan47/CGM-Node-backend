@@ -10,6 +10,11 @@ class Environment {
   @IsInt() @Min(1) REFRESH_TOKEN_EXPIRY_DAYS = 30;
   @IsInt() @Min(1) API_PORT = 5232;
   @IsOptional() @IsString() CORS_ALLOWED_ORIGINS?: string;
+  @IsOptional() @IsString() IDRIVE_ENDPOINT?: string;
+  @IsOptional() @IsString() IDRIVE_REGION?: string;
+  @IsOptional() @IsString() IDRIVE_ACCESS_KEY_ID?: string;
+  @IsOptional() @IsString() IDRIVE_SECRET_ACCESS_KEY?: string;
+  @IsOptional() @IsString() IDRIVE_BUCKET?: string;
 }
 
 export function validateEnvironment(values: Record<string, unknown>) {

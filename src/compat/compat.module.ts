@@ -7,5 +7,22 @@ import { ProfileController } from './profile.controller';
 import { ReportsController } from './reports.controller';
 import { AccountController } from './account.controller';
 import { AuthModule } from '../auth/auth.module';
-@Module({imports:[TypeOrmModule.forFeature([User,PatientProfile]),AuthModule],controllers:[ProfileController,AlertsController,AlertRulesController,NotificationEndpointsController,AppVersionController,ArticlesController,DictionariesController,DeviceHardwareController,AdminController,ReportsController,AccountController]})
-export class CompatModule{}
+import { StorageService } from '../common/storage.service';
+@Module({
+  imports: [TypeOrmModule.forFeature([User, PatientProfile]), AuthModule],
+  controllers: [
+    ProfileController,
+    AlertsController,
+    AlertRulesController,
+    NotificationEndpointsController,
+    AppVersionController,
+    ArticlesController,
+    DictionariesController,
+    DeviceHardwareController,
+    AdminController,
+    ReportsController,
+    AccountController,
+  ],
+  providers: [StorageService],
+})
+export class CompatModule {}

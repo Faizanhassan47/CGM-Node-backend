@@ -13,6 +13,7 @@ export class User {
   @Column({ name: 'LastLoginDeviceInfo', type: 'text', nullable: true }) lastLoginDeviceInfo!: string | null;
   @Column({ name: 'EmailVerified', default: false }) emailVerified!: boolean;
   @Column({ name: 'IsActive', default: true }) isActive!: boolean;
+  @Column({ name: 'ProfilePictureUrl', type: 'varchar', length: 500, nullable: true }) profilePictureUrl!: string | null;
   @Column({ name: 'ReferralCode', type: 'varchar', length: 64, nullable: true }) referralCode!: string | null;
   @Column({ name: 'LastLoginAt', type: 'datetime', nullable: true }) lastLoginAt!: Date | null;
   @Column({ name: 'CreatedAt', type: 'datetime' }) createdAt!: Date;
@@ -27,6 +28,7 @@ export class PatientProfile {
   @Column({ name: 'PhoneNumber', type: 'varchar', length: 50, nullable: true }) phoneNumber!: string | null;
   @Column({ name: 'DateOfBirth', type: 'date', nullable: true }) dateOfBirth!: string | null;
   @Column({ name: 'Gender', type: 'varchar', length: 30, nullable: true }) gender!: string | null;
+  @Column({ name: 'ProfilePictureUrl', type: 'varchar', length: 500, nullable: true }) profilePictureUrl!: string | null;
   @Column({ name: 'PreferredGlucoseUnit', default: 'mg/dL' }) preferredGlucoseUnit!: string;
   @Column({ name: 'Language', default: 'English' }) language!: string;
   @Column({ name: 'Theme', default: 'System' }) theme!: string;

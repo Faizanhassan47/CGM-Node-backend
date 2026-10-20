@@ -275,6 +275,7 @@ export class AuthService {
       email: string;
       email_verified: string | boolean;
       name?: string;
+      picture?: string;
     };
     try {
       const response = await fetch(
@@ -371,6 +372,7 @@ export class AuthService {
             phoneNumber: dto.phoneNumber?.trim() || null,
             dateOfBirth: dto.dateOfBirth ?? null,
             gender: dto.gender ?? null,
+            profilePictureUrl: google.picture ?? null,
             preferredGlucoseUnit: dto.preferredGlucoseUnit || "mg/dL",
             language: "English",
             theme: "System",
@@ -445,6 +447,10 @@ export class AuthService {
         }
         if (dto.preferredGlucoseUnit && !profile.preferredGlucoseUnit) {
           profile.preferredGlucoseUnit = dto.preferredGlucoseUnit;
+          changed = true;
+        }
+        if (google.picture && !profile.profilePictureUrl) {
+          profile.profilePictureUrl = google.picture;
           changed = true;
         }
         if (dto.phoneNumber?.trim() || dto.dateOfBirth) {
