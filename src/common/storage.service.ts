@@ -1,5 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import {
+  ObjectCannedACL,
   S3Client,
   PutObjectCommand,
   CreateBucketCommand,
@@ -13,6 +14,7 @@ export class StorageService {
   private readonly s3: S3Client;
   private readonly bucket: string;
   private readonly endpoint: string;
+  private readonly objectAcl?: ObjectCannedACL;
   private bucketChecked = false;
 
   constructor() {
@@ -23,6 +25,8 @@ export class StorageService {
     const accessKeyId = (process.env.IDRIVE_ACCESS_KEY_ID || '').trim();
     const secretAccessKey = (process.env.IDRIVE_SECRET_ACCESS_KEY || '').trim();
     this.bucket = (process.env.IDRIVE_BUCKET || 'cgm-patient-uploads').trim();
+    const configuredAcl = process.env.IDRIVE_OBJECT_ACL?.trim();
+    this.objectAcl = configuredAcl ? configuredAcl as ObjectCannedACL : undefined;
 
     this.s3 = new S3Client({
       endpoint: this.endpoint,
@@ -63,15 +67,23 @@ export class StorageService {
   ): Promise<string> {
     await this.ensureBucketExists();
 
-    await this.s3.send(
-      new PutObjectCommand({
-        Bucket: this.bucket,
-        Key: key,
-        Body: buffer,
-        ContentType: contentType,
-        ACL: 'public-read',
-      }),
-    );
+    try {
+      await this.s3.send(
+        new PutObjectCommand({
+          Bucket: this.bucket,
+          Key: key,
+          Body: buffer,
+          ContentType: contentType,
+          ...(this.objectAcl ? { ACL: this.objectAcl } : {}),
+        }),
+      );
+    } catch (error: unknown) {
+      const code = error && typeof error === 'object' && 'name' in error
+        ? String(error.name)
+        : 'UnknownStorageError';
+      this.logger.error(`Profile upload failed for bucket ${this.bucket}: ${code}`);
+      throw new ServiceUnavailableException('Profile image storage is temporarily unavailable.');
+    }
 
     // Formatted standard S3/iDrive e2 URL
     const cleanEndpoint = this.endpoint.endsWith('/')

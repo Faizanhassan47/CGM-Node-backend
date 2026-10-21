@@ -20,6 +20,7 @@ export async function ensureTablesExist(dataSource: DataSource): Promise<void> {
        LastLoginDeviceInfo NVARCHAR(MAX) NULL,
        EmailVerified BIT NOT NULL DEFAULT 0,
        IsActive BIT NOT NULL DEFAULT 1,
+       ProfilePictureUrl NVARCHAR(500) NULL,
        ReferralCode NVARCHAR(64) NULL,
        LastLoginAt DATETIME NULL,
        CreatedAt DATETIME NOT NULL DEFAULT GETUTCDATE(),
@@ -34,6 +35,7 @@ export async function ensureTablesExist(dataSource: DataSource): Promise<void> {
        PhoneNumber NVARCHAR(50) NULL,
        DateOfBirth DATE NULL,
        Gender NVARCHAR(30) NULL,
+       ProfilePictureUrl NVARCHAR(500) NULL,
        PreferredGlucoseUnit NVARCHAR(20) NOT NULL DEFAULT 'mg/dL',
        Language NVARCHAR(50) NOT NULL DEFAULT 'English',
        Theme NVARCHAR(50) NOT NULL DEFAULT 'System',
@@ -328,6 +330,7 @@ export async function ensureTablesExist(dataSource: DataSource): Promise<void> {
        LastLoginDeviceInfo TEXT NULL,
        EmailVerified TINYINT(1) NOT NULL DEFAULT 0,
        IsActive TINYINT(1) NOT NULL DEFAULT 1,
+       ProfilePictureUrl VARCHAR(500) NULL,
        ReferralCode VARCHAR(64) NULL,
        LastLoginAt DATETIME NULL,
        CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -341,6 +344,7 @@ export async function ensureTablesExist(dataSource: DataSource): Promise<void> {
        PhoneNumber VARCHAR(50) NULL,
        DateOfBirth DATE NULL,
        Gender VARCHAR(30) NULL,
+       ProfilePictureUrl VARCHAR(500) NULL,
        PreferredGlucoseUnit VARCHAR(20) NOT NULL DEFAULT 'mg/dL',
        Language VARCHAR(50) NOT NULL DEFAULT 'English',
        Theme VARCHAR(50) NOT NULL DEFAULT 'System',
@@ -584,6 +588,24 @@ export async function ensureTablesExist(dataSource: DataSource): Promise<void> {
       await runner.query(sql);
     } catch (e) {
       console.error('Failed to run migration statement:', sql, e);
+    }
+  }
+
+  const requiredColumns = [
+    { table: 'Users', column: 'ProfilePictureUrl', definition: isMssql ? 'NVARCHAR(500) NULL' : 'VARCHAR(500) NULL' },
+    { table: 'PatientProfile', column: 'ProfilePictureUrl', definition: isMssql ? 'NVARCHAR(500) NULL' : 'VARCHAR(500) NULL' },
+  ];
+
+  for (const { table, column, definition } of requiredColumns) {
+    const result = await runner.query(
+      isMssql
+        ? `SELECT COUNT(1) AS columnCount FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = '${table}' AND COLUMN_NAME = '${column}'`
+        : `SELECT COUNT(1) AS columnCount FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '${table}' AND COLUMN_NAME = '${column}'`,
+    );
+    const columnCount = Number(result[0]?.columnCount ?? result[0]?.COLUMNCOUNT ?? 0);
+
+    if (columnCount === 0) {
+      await runner.query(`ALTER TABLE ${table} ADD ${column} ${definition}`);
     }
   }
 

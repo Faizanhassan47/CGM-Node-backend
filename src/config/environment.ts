@@ -15,6 +15,7 @@ class Environment {
   @IsOptional() @IsString() IDRIVE_ACCESS_KEY_ID?: string;
   @IsOptional() @IsString() IDRIVE_SECRET_ACCESS_KEY?: string;
   @IsOptional() @IsString() IDRIVE_BUCKET?: string;
+  @IsOptional() @IsString() IDRIVE_OBJECT_ACL?: string;
 }
 
 export function validateEnvironment(values: Record<string, unknown>) {

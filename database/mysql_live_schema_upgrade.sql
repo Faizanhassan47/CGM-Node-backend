@@ -5,6 +5,13 @@
 SET NAMES utf8mb4;
 SET time_zone = '+00:00';
 
+-- Social-auth and profile image fields introduced after the original Users table.
+ALTER TABLE `Users`
+  ADD COLUMN IF NOT EXISTS `ProfilePictureUrl` VARCHAR(500) NULL AFTER `IsActive`;
+
+ALTER TABLE `PatientProfile`
+  ADD COLUMN IF NOT EXISTS `ProfilePictureUrl` VARCHAR(500) NULL AFTER `Gender`;
+
 -- Sensors: persist when a sensor session ended.
 ALTER TABLE `Sensors`
   ADD COLUMN IF NOT EXISTS `EndedAt` DATETIME(3) NULL AFTER `ExpiresAt`;
@@ -48,7 +55,7 @@ PREPARE stmt FROM @sql;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
--- Verification report. All five rows should be returned.
+-- Verification report. All seven rows should be returned.
 SELECT
   `TABLE_NAME`,
   `COLUMN_NAME`,
@@ -58,7 +65,9 @@ SELECT
 FROM information_schema.COLUMNS
 WHERE TABLE_SCHEMA = DATABASE()
   AND (
-    (`TABLE_NAME` = 'Sensors' AND `COLUMN_NAME` = 'EndedAt')
+    (`TABLE_NAME` = 'Users' AND `COLUMN_NAME` = 'ProfilePictureUrl')
+    OR (`TABLE_NAME` = 'PatientProfile' AND `COLUMN_NAME` = 'ProfilePictureUrl')
+    OR (`TABLE_NAME` = 'Sensors' AND `COLUMN_NAME` = 'EndedAt')
     OR (`TABLE_NAME` = 'GlucoseMeasurements' AND `COLUMN_NAME` IN ('MeasurementTime', 'SequenceNumber'))
     OR (`TABLE_NAME` = 'AppVersions' AND `COLUMN_NAME` IN ('MinimumSupportedVersion', 'DownloadUrl'))
   )
