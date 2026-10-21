@@ -2,11 +2,13 @@ import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common'
 import {
   ObjectCannedACL,
   S3Client,
+  GetObjectCommand,
   PutObjectCommand,
   CreateBucketCommand,
   HeadBucketCommand,
   PutBucketAclCommand,
 } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 @Injectable()
 export class StorageService {
@@ -15,6 +17,7 @@ export class StorageService {
   private readonly bucket: string;
   private readonly endpoint: string;
   private readonly objectAcl?: ObjectCannedACL;
+  private readonly signedUrlTtlSeconds: number;
   private bucketChecked = false;
 
   constructor() {
@@ -27,6 +30,10 @@ export class StorageService {
     this.bucket = (process.env.IDRIVE_BUCKET || 'cgm-patient-uploads').trim();
     const configuredAcl = process.env.IDRIVE_OBJECT_ACL?.trim();
     this.objectAcl = configuredAcl ? configuredAcl as ObjectCannedACL : undefined;
+    const configuredTtl = Number(process.env.IDRIVE_SIGNED_URL_TTL_SECONDS || 3600);
+    this.signedUrlTtlSeconds = Number.isFinite(configuredTtl)
+      ? Math.min(Math.max(Math.floor(configuredTtl), 60), 86_400)
+      : 3600;
 
     this.s3 = new S3Client({
       endpoint: this.endpoint,
@@ -58,7 +65,7 @@ export class StorageService {
   }
 
   /**
-   * Uploads a buffer directly to iDrive e2 S3 and returns the public or access URL.
+   * Uploads a buffer directly to iDrive e2 S3 and returns its object key.
    */
   async uploadFile(
     key: string,
@@ -85,10 +92,35 @@ export class StorageService {
       throw new ServiceUnavailableException('Profile image storage is temporarily unavailable.');
     }
 
-    // Formatted standard S3/iDrive e2 URL
-    const cleanEndpoint = this.endpoint.endsWith('/')
-      ? this.endpoint.slice(0, -1)
-      : this.endpoint;
-    return `${cleanEndpoint}/${this.bucket}/${key}`;
+    return key;
+  }
+
+  async getDisplayUrl(storedValue: string | null): Promise<string | null> {
+    if (!storedValue) return null;
+
+    const objectKey = this.getManagedObjectKey(storedValue);
+    if (!objectKey) return storedValue;
+
+    try {
+      return await getSignedUrl(
+        this.s3,
+        new GetObjectCommand({ Bucket: this.bucket, Key: objectKey }),
+        { expiresIn: this.signedUrlTtlSeconds },
+      );
+    } catch (error: unknown) {
+      const code = error && typeof error === 'object' && 'name' in error
+        ? String(error.name)
+        : 'UnknownStorageError';
+      this.logger.error(`Profile image URL signing failed for bucket ${this.bucket}: ${code}`);
+      throw new ServiceUnavailableException('Profile image storage is temporarily unavailable.');
+    }
+  }
+
+  private getManagedObjectKey(value: string): string | null {
+    if (value.startsWith('avatars/')) return value;
+
+    const endpoint = this.endpoint.endsWith('/') ? this.endpoint.slice(0, -1) : this.endpoint;
+    const bucketPrefix = `${endpoint}/${this.bucket}/`;
+    return value.startsWith(bucketPrefix) ? value.slice(bucketPrefix.length) : null;
   }
 }

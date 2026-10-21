@@ -67,7 +67,7 @@ export class ProfileController {
     return { user, profile };
   }
 
-  private view(user: User, p: PatientProfile) {
+  private async view(user: User, p: PatientProfile) {
     return {
       fullName: user.fullName,
       email: user.email,
@@ -76,7 +76,7 @@ export class ProfileController {
       phoneNumber: p.phoneNumber,
       dateOfBirth: p.dateOfBirth,
       gender: p.gender,
-      profilePictureUrl: p.profilePictureUrl,
+      profilePictureUrl: await this.storage.getDisplayUrl(p.profilePictureUrl),
       preferredGlucoseUnit: p.preferredGlucoseUnit,
       profileCompleted: p.profileCompleted,
       theme: p.theme,
@@ -105,18 +105,18 @@ export class ProfileController {
     }
     const ext = file.originalname.split(".").pop() || "jpg";
     const key = `avatars/user_${u.sub}_${Date.now()}.${ext}`;
-    const url = await this.storage.uploadFile(key, file.buffer, file.mimetype);
+    const pictureKey = await this.storage.uploadFile(key, file.buffer, file.mimetype);
 
     const { user, profile } = await this.get(u.sub);
-    profile.profilePictureUrl = url;
+    profile.profilePictureUrl = pictureKey;
     profile.updatedAt = new Date();
-    user.profilePictureUrl = url;
+    user.profilePictureUrl = pictureKey;
     user.updatedAt = new Date();
     await Promise.all([this.profiles.save(profile), this.users.save(user)]);
 
     return {
-      profilePictureUrl: url,
-      profile: this.view(user, profile),
+      profilePictureUrl: await this.storage.getDisplayUrl(pictureKey),
+      profile: await this.view(user, profile),
     };
   }
 
