@@ -142,7 +142,30 @@ export class AuthService {
             "An account with this email already exists. Please log in instead.",
         });
       }
-      await this.anonymizeDeletedAccount(existing.id);
+      existing.fullName = dto.fullName.trim();
+      existing.passwordHash = this.hash(dto.password);
+      existing.authProvider = "Email";
+      existing.googleSubjectId = null;
+      existing.appleSubjectId = null;
+      existing.emailVerified = true;
+      existing.isActive = true;
+      existing.referralCode = existing.referralCode || randomBytes(5).toString("hex").toUpperCase();
+      existing.tokenVersion += 1;
+      existing.updatedAt = new Date();
+      const reactivated = await this.users.save(existing);
+      const profile = await this.profiles.findOneBy({ userId: existing.id });
+      if (profile) {
+        Object.assign(profile, {
+          phoneNumber: dto.phoneNumber?.trim() || null,
+          dateOfBirth: dto.dateOfBirth ?? null,
+          gender: dto.gender ?? null,
+          preferredGlucoseUnit: dto.preferredGlucoseUnit,
+          profileCompleted: true,
+          updatedAt: new Date(),
+        });
+        await this.profiles.save(profile);
+      }
+      return this.response(reactivated);
     }
 
     const user = await this.users.save(
@@ -193,7 +216,7 @@ export class AuthService {
     if (!user.isActive) {
       throw new UnauthorizedException({
         message:
-          "This account was deleted and cannot sign in. Create a new account to use this email again.",
+          "This account is disabled. Register again with this email and complete your account details to reactivate it.",
       });
     }
     user.lastLoginAt = new Date();
@@ -674,7 +697,7 @@ export class AuthService {
     return { success: true, message: "Password reset successfully." };
   }
   async deleteAccount(userId: number) {
-    console.log(`[AUTH] Deleting account for userId: ${userId}`);
+    console.log(`[AUTH] Disabling account for userId: ${userId}`);
     await this.users.manager.transaction(async (m) => {
       await m.query(
         normalizeSql(
@@ -690,9 +713,18 @@ export class AuthService {
         ),
         [userId],
       );
-      await this.anonymizeDeletedAccountWithManager(m, userId);
+      await m.query(
+        normalizeSql(
+          `UPDATE Users
+             SET IsActive=0, TokenVersion=TokenVersion+1,
+                 UpdatedAt=UTC_TIMESTAMP()
+           WHERE Id=?`,
+          this.users.manager.connection,
+        ),
+        [userId],
+      );
     });
-    console.log(`[AUTH] Account successfully deleted for userId: ${userId}`);
-    return { success: true, message: "Account deleted successfully." };
+    console.log(`[AUTH] Account successfully disabled for userId: ${userId}`);
+    return { success: true, message: "Account disabled successfully. Register again with this email and complete your details to reactivate it." };
   }
 }
