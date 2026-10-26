@@ -1,4 +1,4 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { Public } from '../auth/public.decorator';
 
@@ -9,7 +9,25 @@ export class HealthController {
   @Get('health')
   @Public()
   async health() {
-    await this.dataSource.query('SELECT 1');
+    return this.readiness();
+  }
+
+  @Get('health/live')
+  @Public()
+  live() {
+    return { status: 'Healthy', timestamp: new Date().toISOString() };
+  }
+
+  @Get('health/ready')
+  @Public()
+  async readiness() {
+    try {
+      await this.dataSource.query('SELECT 1');
+    } catch {
+      throw new ServiceUnavailableException({
+        status: 'Unhealthy', database: 'Unhealthy', timestamp: new Date().toISOString(),
+      });
+    }
     return { status: 'Healthy', database: 'Healthy', timestamp: new Date().toISOString() };
   }
 

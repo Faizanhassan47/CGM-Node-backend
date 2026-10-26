@@ -1,0 +1,59 @@
+[33mcommit 0af9d3983a43ddb5bd626b2818a243789bfd21a7[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m
+Author: Faizanhassan47 <YOUR_NOREPLY_EMAIL@users.noreply.github.com>
+Date:   Tue Oct 20 17:04:32 2026 +0500
+
+    Update authentication, email template, devices, and profile services
+
+[33mcommit 216d53e383a5d5868693a8abbf7d6bb30268f009[m[33m ([m[1;31mproduction/main[m[33m, [m[1;31mproduction/HEAD[m[33m)[m
+Author: Faizanhassan47 <YOUR_NOREPLY_EMAIL@users.noreply.github.com>
+Date:   Sun Oct 18 22:36:33 2026 +0500
+
+    Support first password setup for Google accounts
+
+[33mcommit 58c52c5f856dc545f8bded46f23b3a375a1c8209[m
+Author: Faizanhassan47 <YOUR_NOREPLY_EMAIL@users.noreply.github.com>
+Date:   Sun Oct 18 21:24:50 2026 +0500
+
+    Rebrand and secure Circle email templates
+
+[33mcommit 51a73fcd95b49e8a63bef3b72e3ddea0802b085e[m
+Author: Faizanhassan47 <YOUR_NOREPLY_EMAIL@users.noreply.github.com>
+Date:   Sun Oct 18 13:10:15 2026 +0500
+
+    Send welcome email only after profile setup is completed; misc backend updates
+
+[33mcommit 69194b68d9bc52b9d31cdc0fc07e129138e69f79[m
+Author: Faizanhassan47 <YOUR_NOREPLY_EMAIL@users.noreply.github.com>
+Date:   Sun Oct 18 12:50:19 2026 +0500
+
+    Fix deleted account re-registration
+
+[33mcommit c5e30f9dac6b930d986564379cd61d1270c9c8c0[m
+Author: Faizanhassan47 <YOUR_NOREPLY_EMAIL@users.noreply.github.com>
+Date:   Wed Oct 14 17:40:35 2026 +0500
+
+    Add dateOfBirth and gender fields to RegisterDto
+
+[33mcommit 85c6853ba64d69a65a32ccf2e8172a4a07a71b67[m
+Author: Faizanhassan47 <YOUR_NOREPLY_EMAIL@users.noreply.github.com>
+Date:   Wed Oct 14 17:35:33 2026 +0500
+
+    Fix ProfileDto validation and SMTP TLS certificate check
+
+[33mcommit 6ec8de50f638bd1f4842f9903ce7540d74e6d708[m
+Author: Faizanhassan47 <YOUR_NOREPLY_EMAIL@users.noreply.github.com>
+Date:   Wed Oct 14 17:25:19 2026 +0500
+
+    Fix ProfileDto validation and SMTP TLS certificate check
+
+[33mcommit c225a2beae67b26ebd1e9be48fa8a96ae11b54ea[m
+Author: Faizanhassan47 <YOUR_NOREPLY_EMAIL@users.noreply.github.com>
+Date:   Wed Oct 14 16:41:04 2026 +0500
+
+    Fix production build: stop committing tsbuildinfo, disable incremental for build
+
+[33mcommit 714817d9605236143f1e58b4f84cfaab196c590d[m
+Author: Faizanhassan47 <YOUR_NOREPLY_EMAIL@users.noreply.github.com>
+Date:   Wed Oct 14 16:30:34 2026 +0500
+
+    Initial CGM Node Backend commit

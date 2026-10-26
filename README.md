@@ -18,6 +18,37 @@ npm.cmd run start:dev
 
 The port comes from `API_PORT` in `.env`. Swagger is available at `/swagger`.
 
+## Load balancer deployment
+
+Run two or more identical backend instances behind the provider's load balancer. Configure the health check as `GET /health/ready`; it returns `200` when the database is reachable and `503` otherwise. Use `GET /health/live` for a process-only liveness check.
+
+Forward `Host`, `X-Forwarded-For`, and `X-Forwarded-Proto`. Set `TRUST_PROXY=true` only when the service is reachable exclusively through a trusted reverse proxy or load balancer. Each instance must use a different `API_PORT` and the same database, JWT, CORS, and application configuration.
+
+For Nginx, use an upstream similar to:
+
+```nginx
+upstream cgm_backend {
+    server 127.0.0.1:5232;
+    server 127.0.0.1:5233;
+}
+
+server {
+    listen 80;
+    location / {
+        proxy_pass http://cgm_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+```
+
+For multiple Socket.IO instances, configure a shared Socket.IO adapter and WebSocket support at the load balancer; otherwise use session affinity for `/hubs/glucose`.
+
 Google sign-in also requires `GOOGLE_CLIENT_ID` in `.env`. Password-reset email and alert email require the `SMTP_*` values. With no SMTP configuration, reset requests remain intentionally non-disclosing and the OTP is returned only when `NODE_ENV=development`.
 
 ## Implemented compatibility surface

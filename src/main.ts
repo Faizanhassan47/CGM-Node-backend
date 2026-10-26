@@ -8,6 +8,8 @@ import { AppModule } from './app.module';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   const config = app.get(ConfigService);
+  app.enableShutdownHooks();
+  app.getHttpAdapter().getInstance().set('trust proxy', config.get<boolean>('TRUST_PROXY') ?? false);
   app.use(helmet());
   app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true }));
   const origins = (config.get<string>('CORS_ALLOWED_ORIGINS') ?? '').split(';').filter(Boolean);
