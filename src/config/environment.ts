@@ -17,10 +17,6 @@ class Environment {
   @IsOptional() @IsString() IDRIVE_BUCKET?: string;
   @IsOptional() @IsString() IDRIVE_OBJECT_ACL?: string;
   @IsOptional() @IsInt() @Min(60) IDRIVE_SIGNED_URL_TTL_SECONDS?: number;
-  @IsString() REDIS_URL!: string;
-  @IsOptional() @IsInt() @Min(1) HTTP_REQUEST_TIMEOUT_MS = 30_000;
-  @IsOptional() @IsInt() @Min(1) HTTP_BODY_LIMIT_MB = 10;
-  @IsOptional() @IsString() RUN_SCHEDULED_WORKERS?: string;
 }
 
 export function validateEnvironment(values: Record<string, unknown>) {
@@ -28,7 +24,7 @@ export function validateEnvironment(values: Record<string, unknown>) {
     key,
     typeof value === 'string' ? value.trim().replace(/^['"]|['"]$/g, '') : value,
   ]));
-  for (const key of ['JWT_EXPIRY_MINUTES', 'REFRESH_TOKEN_EXPIRY_DAYS', 'API_PORT', 'IDRIVE_SIGNED_URL_TTL_SECONDS', 'HTTP_REQUEST_TIMEOUT_MS', 'HTTP_BODY_LIMIT_MB']) {
+  for (const key of ['JWT_EXPIRY_MINUTES', 'REFRESH_TOKEN_EXPIRY_DAYS', 'API_PORT', 'IDRIVE_SIGNED_URL_TTL_SECONDS']) {
     if (typeof normalized[key] === 'string' && normalized[key] !== '') normalized[key] = Number(normalized[key]);
   }
   const config = plainToInstance(Environment, normalized, { enableImplicitConversion: true });

@@ -6,7 +6,6 @@ NestJS/TypeScript replacement for the legacy ASP.NET CGM API. The migration pres
 
 - Node.js 22 or newer
 - MySQL 8
-- Redis 7+
 - A local `.env` file (already created on this development machine)
 
 ## Run
@@ -18,12 +17,6 @@ npm.cmd run start:dev
 ```
 
 The port comes from `API_PORT` in `.env`. Swagger is available at `/swagger`.
-
-For multiple API instances, configure the same `REDIS_URL` on every instance. Redis is used for distributed throttling and Socket.IO fan-out. Set `RUN_SCHEDULED_WORKERS=true` on exactly one worker process; keep it false on load-balanced API instances.
-
-Start local Redis with `docker compose -f docker-compose.redis.yml up -d`. Change the example Redis password and use a matching URL such as `redis://:change-this-password@127.0.0.1:6379`.
-
-Readiness is exposed at `/health/ready`; liveness is exposed at `/health/live`.
 
 Google sign-in also requires `GOOGLE_CLIENT_ID` in `.env`. Password-reset email and alert email require the `SMTP_*` values. With no SMTP configuration, reset requests remain intentionally non-disclosing and the OTP is returned only when `NODE_ENV=development`.
 
