@@ -37,7 +37,7 @@
     "mssql": "^12.7.9",
     "multer": "^2.5.0",
     "mysql2": "^3.15.3",
-    "nodemailer": "^10.1.2",
+    "nodemailer": "^10.1.4",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "reflect-metadata": "^0.2.2",
