@@ -1,0 +1,12 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "change-this-password"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - cgm-redis-data:/data
+
+volumes:
+  cgm-redis-data:

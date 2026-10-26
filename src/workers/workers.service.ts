@@ -11,10 +11,12 @@ export class WorkersService {
     private db: DataSource,
     private config: ConfigService,
   ) {}
+  private get enabled() { return (this.config.get<string>('RUN_SCHEDULED_WORKERS') ?? 'false').toLowerCase() === 'true'; }
   private q(sql: string, params?: unknown[]) {
     return this.db.query(normalizeSql(sql, this.db), params);
   }
   @Interval(10_000) async notifications() {
+    if (!this.enabled) return;
     try {
       const items = await this.q(
         'SELECT q.Id QueueId,q.AlertId,q.RetryCount,a.Title,a.Message,a.UserId FROM AlertQueue q JOIN Alerts a ON a.Id=q.AlertId WHERE q.Status IN ("Pending","Failed") AND q.RetryCount<3 AND (q.NextAttemptAt IS NULL OR q.NextAttemptAt<=UTC_TIMESTAMP()) ORDER BY q.CreatedAt LIMIT 25',
@@ -274,6 +276,7 @@ export class WorkersService {
 
   @Cron(CronExpression.EVERY_MINUTE)
   async operations() {
+    if (!this.enabled) return;
     // Purge or archive historic failed notifications older than 24 hours to keep the queue clean
     await this.q(
       'DELETE FROM AlertQueue WHERE Status="Failed" AND CreatedAt < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 DAY)',

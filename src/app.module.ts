@@ -14,16 +14,22 @@ import { CgmModule } from './cgm/cgm.module';
 import { CompatModule } from './compat/compat.module';
 import { FamilyModule } from './family/family.module';
 import { WorkersModule } from './workers/workers.module';
+import { RedisModule } from './common/redis.module';
+import { RedisThrottlerStorage } from './common/redis-throttler.storage';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, envFilePath: ['.env.local', '.env'], validate: validateEnvironment }),
+    RedisModule,
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => databaseConfig(config.getOrThrow('DB_CONNECTION_STRING')),
     }),
     ScheduleModule.forRoot(),
-    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),
+    ThrottlerModule.forRootAsync({
+      inject: [RedisThrottlerStorage],
+      useFactory: (storage: RedisThrottlerStorage) => ({ throttlers: [{ ttl: 60_000, limit: 100 }], storage }),
+    }),
     AuthModule,
     CgmModule,
     CompatModule,
