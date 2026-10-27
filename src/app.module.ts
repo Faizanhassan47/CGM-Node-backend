@@ -14,6 +14,7 @@ import { CgmModule } from './cgm/cgm.module';
 import { CompatModule } from './compat/compat.module';
 import { FamilyModule } from './family/family.module';
 import { WorkersModule } from './workers/workers.module';
+import { WellnessModule } from './wellness/wellness.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { WorkersModule } from './workers/workers.module';
     CompatModule,
     FamilyModule,
     WorkersModule,
+    WellnessModule,
   ],
   controllers: [AppController, HealthController],
   providers: [
