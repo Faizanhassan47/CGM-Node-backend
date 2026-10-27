@@ -3,7 +3,7 @@ import { IsBoolean, IsDateString, IsIn, IsInt, IsNumber, IsOptional, IsString, L
 export class ReminderSettingsDto {
   @IsOptional() @IsBoolean() mealEnabled?: boolean;
   @IsOptional() @IsBoolean() waterEnabled?: boolean;
-  @IsOptional() @IsInt() @Min(30) @Max(720) waterIntervalMinutes?: number;
+  @IsOptional() @IsInt() @Min(5) @Max(720) waterIntervalMinutes?: number;
   @IsOptional() @IsInt() @Min(0) @Max(20000) dailyWaterGoalMl?: number | null;
   @IsOptional() @IsBoolean() quietHoursEnabled?: boolean;
   @IsOptional() @IsString() @Length(5, 5) quietStart?: string;
