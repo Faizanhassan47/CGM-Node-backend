@@ -26,7 +26,7 @@ export class SensorsController {
     for (const s of userActive) Object.assign(s, { status: 'Expired', isActive: false, endedAt: new Date() });
     await this.sensors.save(userActive);
     const startedAt = new Date();
-    const isImmediate = (dto.warmupMinutes ?? 120) === 0;
+    const isImmediate = (dto.warmupMinutes ?? 5) === 0;
     const sensor = await this.sensors.save(this.sensors.create({ userId: u.sub, deviceId: dto.deviceId, sensorIdentifier: serial, status: isImmediate ? 'Active' : 'Warmup', startedAt, activatedAt: isImmediate ? startedAt : new Date(startedAt.getTime() + dto.warmupMinutes * 60_000), expiresAt: new Date(startedAt.getTime() + 15 * 86_400_000), isActive: true }));
     return this.view(sensor);
   }

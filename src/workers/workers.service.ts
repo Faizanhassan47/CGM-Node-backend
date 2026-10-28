@@ -17,6 +17,16 @@ export class WorkersService {
   private q(sql: string, params?: unknown[]) {
     return this.db.query(normalizeSql(sql, this.db), params);
   }
+  private summaryDate(value: unknown): string {
+    if (value instanceof Date) {
+      const pad = (n: number) => String(n).padStart(2, '0');
+      return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`;
+    }
+    const text = String(value ?? '');
+    const iso = text.match(/\d{4}-\d{2}-\d{2}/)?.[0];
+    if (!iso) throw new Error(`Invalid DailySummaryJobs date: ${text}`);
+    return iso;
+  }
   public async enqueueDailySummary(userId: number, dateStr: string) {
     if (this.db.options.type === 'mssql') {
       await this.q(
@@ -39,7 +49,7 @@ export class WorkersService {
         const claimed = Number(claim?.affectedRows ?? claim?.[1]?.affectedRows ?? claim?.rowsAffected?.[0] ?? 0);
         if (claimed !== 1) continue;
         try {
-          await this.computeAndSaveDailySummary(Number(job.UserId), String(job.SummaryDate).slice(0, 10));
+          await this.computeAndSaveDailySummary(Number(job.UserId), this.summaryDate(job.SummaryDate));
           await this.q('UPDATE DailySummaryJobs SET Status=CASE WHEN RequestedVersion>? THEN "Pending" ELSE "Completed" END,ProcessedVersion=?,RetryCount=0,NextAttemptAt=NULL,LeaseOwner=NULL,LeaseExpiresAt=NULL,UpdatedAt=UTC_TIMESTAMP() WHERE Id=? AND Status="Processing" AND LeaseOwner=?', [job.RequestedVersion, job.RequestedVersion, job.Id, owner]);
         } catch (error) {
           const retry = Number(job.RetryCount) + 1;
