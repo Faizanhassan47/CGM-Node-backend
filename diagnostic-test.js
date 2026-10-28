@@ -8,9 +8,8 @@ const BASE_URL = 'https://aima.gms-world.com';
 const statusCodes = new Counter('response_codes');
 
 export const options = {
-    vus: 10,
+    vus: 30,
     duration: '60s',
-
     thresholds: {
         http_req_failed: ['rate<0.01'],
         http_req_duration: ['p(95)<1500'],

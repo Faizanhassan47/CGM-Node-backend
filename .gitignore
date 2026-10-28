@@ -6,5 +6,7 @@ coverage/
 .env.local
 *.log
 *.tsbuildinfo
+package.json.backup
+package-lock.json.backup
 !.env.example
 !.env.example

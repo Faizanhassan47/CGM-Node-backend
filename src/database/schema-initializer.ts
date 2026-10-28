@@ -137,6 +137,9 @@ export async function ensureTablesExist(dataSource: DataSource): Promise<void> {
        Id INT IDENTITY(1,1) PRIMARY KEY,
        AlertId INT NOT NULL,
        Status NVARCHAR(50) NOT NULL DEFAULT 'Pending',
+       ProcessingStartedAt DATETIME NULL,
+       LeaseExpiresAt DATETIME NULL,
+       LeaseOwner NVARCHAR(100) NULL,
        RetryCount INT NOT NULL DEFAULT 0,
        NextAttemptAt DATETIME NULL,
        ProcessedAt DATETIME NULL,
@@ -223,6 +226,24 @@ export async function ensureTablesExist(dataSource: DataSource): Promise<void> {
        HighEventsCount INT NOT NULL,
        LowEventsCount INT NOT NULL,
        GeneratedAt DATETIME NOT NULL DEFAULT GETUTCDATE()
+     );`,
+
+    `IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'DailySummaryJobs')
+     CREATE TABLE DailySummaryJobs (
+       Id BIGINT IDENTITY(1,1) PRIMARY KEY,
+       UserId INT NOT NULL,
+       SummaryDate DATE NOT NULL,
+       Status NVARCHAR(20) NOT NULL DEFAULT 'Pending',
+       RetryCount INT NOT NULL DEFAULT 0,
+       NextAttemptAt DATETIME NULL,
+       LeaseOwner NVARCHAR(100) NULL,
+       LeaseExpiresAt DATETIME NULL,
+       RequestedVersion BIGINT NOT NULL DEFAULT 1,
+       ProcessedVersion BIGINT NOT NULL DEFAULT 0,
+       LastError NVARCHAR(MAX) NULL,
+       CreatedAt DATETIME NOT NULL DEFAULT GETUTCDATE(),
+       UpdatedAt DATETIME NOT NULL DEFAULT GETUTCDATE(),
+       CONSTRAINT UQ_DailySummaryJobs_UserDate UNIQUE (UserId, SummaryDate)
      );`,
 
     `IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'PasswordResetRequests')
@@ -449,6 +470,9 @@ export async function ensureTablesExist(dataSource: DataSource): Promise<void> {
        Id INT AUTO_INCREMENT PRIMARY KEY,
        AlertId INT NOT NULL,
        Status VARCHAR(50) NOT NULL DEFAULT 'Pending',
+       ProcessingStartedAt DATETIME NULL,
+       LeaseExpiresAt DATETIME NULL,
+       LeaseOwner VARCHAR(100) NULL,
        RetryCount INT NOT NULL DEFAULT 0,
        NextAttemptAt DATETIME NULL,
        ProcessedAt DATETIME NULL,
@@ -530,6 +554,24 @@ export async function ensureTablesExist(dataSource: DataSource): Promise<void> {
        LowEventsCount INT NOT NULL,
        GeneratedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
        UNIQUE KEY uq_user_date (UserId, SummaryDate)
+     );`,
+
+    `CREATE TABLE IF NOT EXISTS DailySummaryJobs (
+       Id BIGINT AUTO_INCREMENT PRIMARY KEY,
+       UserId INT NOT NULL,
+       SummaryDate DATE NOT NULL,
+       Status VARCHAR(20) NOT NULL DEFAULT 'Pending',
+       RetryCount INT NOT NULL DEFAULT 0,
+       NextAttemptAt DATETIME(6) NULL,
+       LeaseOwner VARCHAR(100) NULL,
+       LeaseExpiresAt DATETIME(6) NULL,
+       RequestedVersion BIGINT UNSIGNED NOT NULL DEFAULT 1,
+       ProcessedVersion BIGINT UNSIGNED NOT NULL DEFAULT 0,
+       LastError TEXT NULL,
+       CreatedAt DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+       UpdatedAt DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+       UNIQUE KEY uq_daily_summary_jobs_user_date (UserId, SummaryDate),
+       KEY idx_daily_summary_jobs_poll (Status, NextAttemptAt, LeaseExpiresAt)
      );`,
 
     `CREATE TABLE IF NOT EXISTS PasswordResetRequests (

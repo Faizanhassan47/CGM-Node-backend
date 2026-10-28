@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
 import { WorkersService } from './workers.service';
-@Module({ providers: [WorkersService], exports: [WorkersService] })
+import { FirebaseAdminService } from '../firebase/firebase-admin.service';
+@Module({ providers: [WorkersService, FirebaseAdminService], exports: [WorkersService] })
 export class WorkersModule {}

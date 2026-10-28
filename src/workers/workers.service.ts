@@ -2,17 +2,54 @@ import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { Cron, CronExpression, Interval } from "@nestjs/schedule";
 import * as nodemailer from "nodemailer";
+import { randomUUID } from "crypto";
 import { DataSource } from "typeorm";
 import { normalizeSql } from "../common/sql-helper";
+import { FirebaseAdminService } from "../firebase/firebase-admin.service";
 @Injectable()
 export class WorkersService {
   private log = new Logger(WorkersService.name);
   constructor(
     private db: DataSource,
     private config: ConfigService,
+    private firebaseAdmin: FirebaseAdminService,
   ) {}
   private q(sql: string, params?: unknown[]) {
     return this.db.query(normalizeSql(sql, this.db), params);
+  }
+  public async enqueueDailySummary(userId: number, dateStr: string) {
+    if (this.db.options.type === 'mssql') {
+      await this.q(
+        'IF EXISTS (SELECT 1 FROM DailySummaryJobs WHERE UserId=? AND SummaryDate=?) UPDATE DailySummaryJobs SET RequestedVersion=RequestedVersion+1,Status=CASE WHEN Status="Completed" THEN "Pending" ELSE Status END,UpdatedAt=GETUTCDATE() WHERE UserId=? AND SummaryDate=? ELSE INSERT INTO DailySummaryJobs(UserId,SummaryDate,Status,RequestedVersion,ProcessedVersion,CreatedAt,UpdatedAt) VALUES(?,?,"Pending",1,0,GETUTCDATE(),GETUTCDATE())',
+        [userId, dateStr, userId, dateStr, userId, dateStr],
+      );
+      return;
+    }
+    await this.q(
+      'INSERT INTO DailySummaryJobs(UserId,SummaryDate,Status,RequestedVersion,ProcessedVersion) VALUES(?,? ,"Pending",1,0) ON DUPLICATE KEY UPDATE RequestedVersion=RequestedVersion+1,Status=IF(Status="Completed","Pending",Status),UpdatedAt=UTC_TIMESTAMP(6)',
+      [userId, dateStr],
+    );
+  }
+  @Interval(10_000) async dailySummaryJobs() {
+    try {
+      const jobs = await this.q('SELECT Id,UserId,SummaryDate,RetryCount,RequestedVersion FROM DailySummaryJobs WHERE (Status IN ("Pending","Failed") AND RetryCount<3 AND (NextAttemptAt IS NULL OR NextAttemptAt<=UTC_TIMESTAMP())) OR (Status="Processing" AND LeaseExpiresAt<UTC_TIMESTAMP()) ORDER BY CreatedAt LIMIT 25');
+      for (const job of jobs) {
+        const owner = randomUUID();
+        const claim = await this.q('UPDATE DailySummaryJobs SET Status="Processing",LeaseOwner=?,LeaseExpiresAt=DATE_ADD(UTC_TIMESTAMP(),INTERVAL 5 MINUTE),LastError=NULL,UpdatedAt=UTC_TIMESTAMP() WHERE Id=? AND ((Status IN ("Pending","Failed") AND RetryCount<3 AND (NextAttemptAt IS NULL OR NextAttemptAt<=UTC_TIMESTAMP())) OR (Status="Processing" AND LeaseExpiresAt<UTC_TIMESTAMP()))', [owner, job.Id]);
+        const claimed = Number(claim?.affectedRows ?? claim?.[1]?.affectedRows ?? claim?.rowsAffected?.[0] ?? 0);
+        if (claimed !== 1) continue;
+        try {
+          await this.computeAndSaveDailySummary(Number(job.UserId), String(job.SummaryDate).slice(0, 10));
+          await this.q('UPDATE DailySummaryJobs SET Status=CASE WHEN RequestedVersion>? THEN "Pending" ELSE "Completed" END,ProcessedVersion=?,RetryCount=0,NextAttemptAt=NULL,LeaseOwner=NULL,LeaseExpiresAt=NULL,UpdatedAt=UTC_TIMESTAMP() WHERE Id=? AND Status="Processing" AND LeaseOwner=?', [job.RequestedVersion, job.RequestedVersion, job.Id, owner]);
+        } catch (error) {
+          const retry = Number(job.RetryCount) + 1;
+          await this.q('UPDATE DailySummaryJobs SET Status=?,RetryCount=?,NextAttemptAt=?,LastError=?,LeaseOwner=NULL,LeaseExpiresAt=NULL,UpdatedAt=UTC_TIMESTAMP() WHERE Id=? AND Status="Processing" AND LeaseOwner=?', [retry >= 3 ? 'Failed' : 'Pending', retry, retry >= 3 ? null : new Date(Date.now() + 2 ** retry * 60_000), error instanceof Error ? error.message : String(error), job.Id, owner]);
+          this.log.error(`[DAILY-SUMMARIES] Job ${job.Id} failed`, error instanceof Error ? error.stack : String(error));
+        }
+      }
+    } catch (error) {
+      this.log.error('[DAILY-SUMMARIES] Queue polling failed', error instanceof Error ? error.stack : String(error));
+    }
   }
   @Interval(10_000) async notifications() {
     try {
@@ -20,10 +57,13 @@ export class WorkersService {
         'SELECT q.Id QueueId,q.AlertId,q.RetryCount,a.Title,a.Message,a.UserId FROM AlertQueue q JOIN Alerts a ON a.Id=q.AlertId WHERE q.Status IN ("Pending","Failed") AND q.RetryCount<3 AND (q.NextAttemptAt IS NULL OR q.NextAttemptAt<=UTC_TIMESTAMP()) ORDER BY q.CreatedAt LIMIT 25',
       );
       for (const item of items) {
-        await this.q(
-          'UPDATE AlertQueue SET Status="Processing" WHERE Id=? AND Status IN ("Pending","Failed")',
-          [item.QueueId],
+        const leaseOwner = randomUUID();
+        const claim = await this.q(
+          'UPDATE AlertQueue SET Status="Processing",ProcessingStartedAt=UTC_TIMESTAMP(),LeaseExpiresAt=DATE_ADD(UTC_TIMESTAMP(),INTERVAL 5 MINUTE),LeaseOwner=? WHERE Id=? AND Status IN ("Pending","Failed") AND RetryCount<3 AND (NextAttemptAt IS NULL OR NextAttemptAt<=UTC_TIMESTAMP())',
+          [leaseOwner, item.QueueId],
         );
+        const claimed = Number(claim?.affectedRows ?? claim?.[1]?.affectedRows ?? claim?.rowsAffected?.[0] ?? 0);
+        if (claimed !== 1) continue;
         let ok = true;
         const recipients = await this.q(
           "SELECT DISTINCT u.Id,u.FullName,u.Email FROM AlertRecipients r JOIN Users u ON u.Id=r.UserId WHERE r.AlertId=? AND u.IsActive=1",
@@ -60,7 +100,7 @@ export class WorkersService {
         }
         const retry = Number(item.RetryCount) + 1;
         await this.q(
-          "UPDATE AlertQueue SET RetryCount=?,Status=?,ProcessedAt=?,NextAttemptAt=?,ErrorMessage=? WHERE Id=?",
+          'UPDATE AlertQueue SET RetryCount=?,Status=?,ProcessedAt=?,NextAttemptAt=?,ErrorMessage=?,ProcessingStartedAt=NULL,LeaseExpiresAt=NULL,LeaseOwner=NULL WHERE Id=? AND Status="Processing" AND LeaseOwner=?',
           [
             retry,
             ok ? "Completed" : retry >= 3 ? "Failed" : "Pending",
@@ -68,6 +108,7 @@ export class WorkersService {
             ok ? null : new Date(Date.now() + 2 ** retry * 60000),
             ok ? null : "One or more notification deliveries failed.",
             item.QueueId,
+            leaseOwner,
           ],
         );
       }
@@ -82,8 +123,8 @@ export class WorkersService {
       user = this.config.get<string>("SMTP_USER"),
       pass = this.config.get<string>("SMTP_PASS");
     if (!host || !user || !pass) {
-      this.log.warn(`SMTP not configured; email queued for ${to}`);
-      return true;
+      this.log.error('SMTP is not configured; email delivery was not attempted.');
+      return false;
     }
     try {
       const port = this.config.get<number>("SMTP_PORT") ?? 587;
@@ -145,40 +186,25 @@ export class WorkersService {
   }
 
   private async sendFcm(token: string, payload: unknown): Promise<boolean> {
-    const key =
-      this.config.get<string>("FCM_SERVER_KEY") ||
-      this.config.get<string>("FIREBASE_SERVER_KEY");
-    if (!key || !token) return false;
+    if (!token) return false;
     const data = (payload ?? {}) as { title?: string; message?: string; alertId?: number };
     try {
-      const response = await fetch("https://fcm.googleapis.com/fcm/send", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `key=${key}`,
+      const messageId = await this.firebaseAdmin.messaging.send({
+        token,
+        notification: {
+          title: data.title || 'AIMA CGM Alert',
+          body: data.message || '',
         },
-        body: JSON.stringify({
-          to: token,
-          priority: "high",
-          notification: {
-            title: data.title || "Circle alert",
-            body: data.message || "",
-            sound: "default",
-          },
-          data: {
-            title: String(data.title || "Circle alert"),
-            body: String(data.message || ""),
-            alertId: String(data.alertId ?? ""),
-          },
-        }),
+        data: { alertId: String(data.alertId ?? '') },
+        android: {
+          priority: 'high',
+          notification: { channelId: 'cgm_urgent_channel', sound: 'default' },
+        },
       });
-      if (!response.ok) {
-        this.log.error(`FCM returned HTTP ${response.status}`);
-        return false;
-      }
+      this.log.log(`FCM accepted message: ${messageId}`);
       return true;
     } catch (error) {
-      this.log.error("FCM request failed", error);
+      this.log.error('Firebase notification failed', error instanceof Error ? error.stack : String(error));
       return false;
     }
   }
@@ -312,16 +338,15 @@ export class WorkersService {
         `[DAILY-SUMMARIES] Failed to save summary for userId ${userId}:`,
         e.message || e,
       );
+      throw e;
     }
   }
 
   @Cron(CronExpression.EVERY_MINUTE)
   async operations() {
-    // Purge or archive historic failed notifications older than 24 hours to keep the queue clean
     await this.q(
-      'DELETE FROM AlertQueue WHERE Status="Failed" AND CreatedAt < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 DAY)',
+      'UPDATE AlertQueue SET Status="Pending",ProcessingStartedAt=NULL,LeaseExpiresAt=NULL,LeaseOwner=NULL,NextAttemptAt=UTC_TIMESTAMP(),ErrorMessage="Recovered expired processing lease" WHERE Status="Processing" AND LeaseExpiresAt IS NOT NULL AND LeaseExpiresAt<UTC_TIMESTAMP()',
     );
-
     const [failed] = await this.q(
       'SELECT COUNT(*) count FROM AlertQueue WHERE Status="Failed"',
     );

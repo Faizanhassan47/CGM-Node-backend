@@ -20,6 +20,34 @@ export class GlucoseController {
     private readonly workers: WorkersService,
   ) {}
   private q(sql: string, params?: unknown[]) { return this.db.query(normalizeSql(sql, this.db), params); }
+  private async createAlertWithRecipients(userId: number, sensorId: number, hit: { type: string; title: string; severity: string }, value: number, time: Date) {
+    const runner = this.db.createQueryRunner();
+    await runner.connect();
+    await runner.startTransaction();
+    const query = (sql: string, params?: unknown[]) => runner.query(normalizeSql(sql, this.db), params);
+    try {
+      await query(this.db.options.type === 'mssql' ? 'SELECT Id FROM Users WITH (UPDLOCK,HOLDLOCK) WHERE Id=?' : 'SELECT Id FROM Users WHERE Id=? FOR UPDATE', [userId]);
+      const recent = await query('SELECT Id FROM Alerts WHERE UserId=? AND AlertType=? AND AlertTime>=? AND AlertTime<=? ORDER BY AlertTime DESC', [userId, hit.type, new Date(time.getTime() - 15 * 60_000), time]);
+      if (recent.length) { await runner.commitTransaction(); return; }
+      const isMssql = this.db.options.type === 'mssql';
+      const insertSql = isMssql
+        ? 'INSERT INTO Alerts(UserId,SensorId,AlertType,Title,Message,GlucoseValue,GlucoseUnit,Severity,IsRead,AlertTime,CreatedAt) OUTPUT INSERTED.Id VALUES(?,?,?,?,?,?,?,?,0,?,GETUTCDATE())'
+        : 'INSERT INTO Alerts(UserId,SensorId,AlertType,Title,Message,GlucoseValue,GlucoseUnit,Severity,IsRead,AlertTime,CreatedAt) VALUES(?,?,?,?,?,?,?,?,0,?,UTC_TIMESTAMP())';
+      const result = await query(insertSql, [userId, sensorId, hit.type, hit.title, `${hit.title}: ${value} mg/dL`, value, 'mg/dL', hit.severity, time]);
+      const alertId = Number(isMssql ? result?.[0]?.Id ?? result?.[0]?.id : result?.insertId);
+      if (!Number.isSafeInteger(alertId) || alertId <= 0) throw new Error('Alert insertion failed to return a valid alert ID.');
+      const recipients = await query('SELECT DISTINCT UserId FROM FamilyMembers WHERE FamilyId IN (SELECT Id FROM Families WHERE OwnerUserId=? UNION SELECT FamilyId FROM FamilyMembers WHERE UserId=? AND Status="Active") AND Status="Active" AND ReceiveAlerts=1', [userId, userId]);
+      const targetUserIds = [userId, ...recipients.map((r: Record<string, number>) => r.UserId ?? r.userId)];
+      for (const uid of [...new Set(targetUserIds)]) await query('INSERT INTO AlertRecipients(AlertId,UserId,IsRead,CreatedAt) VALUES(?,?,0,UTC_TIMESTAMP())', [alertId, uid]);
+      await query('INSERT INTO AlertQueue(AlertId,Status,RetryCount,CreatedAt) VALUES(?,"Pending",0,UTC_TIMESTAMP())', [alertId]);
+      await runner.commitTransaction();
+    } catch (error) {
+      await runner.rollbackTransaction();
+      throw error;
+    } finally {
+      await runner.release();
+    }
+  }
   private async notify(userId: number, sensorId: number, value: number, time: Date) {
     try {
       const profiles = await this.q(
@@ -42,32 +70,7 @@ export class GlucoseController {
       });
 
       if (hit) {
-        const recent = await this.q(
-          'SELECT Id FROM Alerts WHERE UserId=? AND AlertType=? AND AlertTime>=? ORDER BY AlertTime DESC',
-          [userId, hit.type, new Date(time.getTime() - 15 * 60_000)],
-        );
-        if (!recent.length) {
-          await this.q(
-            'INSERT INTO Alerts(UserId,SensorId,AlertType,Title,Message,GlucoseValue,GlucoseUnit,Severity,IsRead,AlertTime,CreatedAt) VALUES(?,?,?,?,?,?,?,?,0,?,UTC_TIMESTAMP())',
-            [userId, sensorId, hit.type, hit.title, `${hit.title}: ${value} mg/dL`, value, 'mg/dL', hit.severity, time],
-          );
-          const aRow = (await this.q('SELECT TOP 1 Id FROM Alerts WHERE UserId=? ORDER BY Id DESC', [userId]))[0];
-          const alertId = aRow?.Id ?? aRow?.id;
-          if (alertId) {
-            const recipients = await this.q(
-              'SELECT DISTINCT UserId FROM FamilyMembers WHERE FamilyId IN (SELECT Id FROM Families WHERE OwnerUserId=? UNION SELECT FamilyId FROM FamilyMembers WHERE UserId=? AND Status="Active") AND Status="Active" AND ReceiveAlerts=1',
-              [userId, userId],
-            );
-            const targetUserIds = [userId, ...recipients.map((r: Record<string, number>) => r.UserId ?? r.userId)];
-            for (const uid of [...new Set(targetUserIds)]) {
-              const existing = await this.q('SELECT 1 FROM AlertRecipients WHERE AlertId=? AND UserId=?', [alertId, uid]);
-              if (!existing.length) {
-                await this.q('INSERT INTO AlertRecipients(AlertId,UserId,IsRead,CreatedAt) VALUES(?,?,0,UTC_TIMESTAMP())', [alertId, uid]);
-              }
-            }
-            await this.q('INSERT INTO AlertQueue(AlertId,Status,RetryCount,CreatedAt) VALUES(?,"Pending",0,UTC_TIMESTAMP())', [alertId]);
-          }
-        }
+        await this.createAlertWithRecipients(userId, sensorId, hit, value, time);
       }
       const families = await this.q('SELECT Id FROM Families WHERE OwnerUserId=? UNION SELECT FamilyId Id FROM FamilyMembers WHERE UserId=? AND Status="Active"', [userId, userId]);
       this.gateway.publish(families.map((x: Record<string, number>) => x.Id ?? x.id), { userId, glucoseValue: value, measurementTime: time });
@@ -124,7 +127,7 @@ export class GlucoseController {
     }
     try { await this.notify(u.sub, s.id, dto.glucoseValue, new Date(dto.measurementTime)); } catch(_) {}
     const dateStr = new Date(dto.measurementTime).toISOString().slice(0, 10);
-    this.workers.computeAndSaveDailySummary(u.sub, dateStr).catch(() => {});
+    await this.workers.enqueueDailySummary(u.sub, dateStr);
     return { message: 'Measurement saved successfully.', measurementTime: dto.measurementTime };
   }
 
@@ -135,36 +138,67 @@ export class GlucoseController {
       const error = this.validate(s, d);
       if (error) throw new BadRequestException({ message: error });
     }
+    // De-duplicate inside the request first. The database primary key on
+    // (SensorId, MeasurementTime) remains the concurrency boundary for
+    // overlapping uploads.
+    const uniqueMeasurements = [...new Map(
+      dto.measurements.map((measurement) => [
+        new Date(measurement.measurementTime).getTime(),
+        measurement,
+      ]),
+    ).values()];
     let inserted = 0;
     const acknowledged: number[] = [];
     const affectedDates = new Set<string>();
     const insertedRows: Array<{ value: number; time: Date }> = [];
 
-    for (const d of dto.measurements) {
+    for (const d of uniqueMeasurements) {
       if (d.sequenceNumber != null) acknowledged.push(d.sequenceNumber);
       const measurementTime = new Date(d.measurementTime);
-      const duplicate = await this.readings.exist({ where: { sensorId: s.id, measurementTime } });
-      if (!duplicate) {
-        await this.readings.save(this.entity(u.sub, s, d));
-        inserted++;
-        affectedDates.add(measurementTime.toISOString().slice(0, 10));
-        insertedRows.push({ value: d.glucoseValue, time: measurementTime });
-        if (!s.lastReadingAt || measurementTime > s.lastReadingAt) {
-          s.lastReadingAt = measurementTime;
+      affectedDates.add(measurementTime.toISOString().slice(0, 10));
+      insertedRows.push({ value: d.glucoseValue, time: measurementTime });
+      if (!s.lastReadingAt || measurementTime > s.lastReadingAt) {
+        s.lastReadingAt = measurementTime;
+      }
+    }
+
+    if (uniqueMeasurements.length) {
+      const values = uniqueMeasurements.map((d) => this.entity(u.sub, s, d));
+      if (this.db.options.type === 'mysql' || this.db.options.type === 'mariadb') {
+        const result = await this.readings
+          .createQueryBuilder()
+          .insert()
+          .values(values)
+          .orIgnore()
+          .execute();
+        inserted = Number(result.raw?.affectedRows ?? result.identifiers?.length ?? 0);
+      } else {
+        // SQL Server has the same composite primary key, but TypeORM's
+        // portable insert-ignore syntax is not available for it. Keep this
+        // fallback race-safe by treating a duplicate-key error as a skip.
+        for (const value of values) {
+          try {
+            await this.readings.insert(value);
+            inserted++;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (!/duplicate|primary key|unique/i.test(message)) throw error;
+          }
         }
       }
     }
 
-    if (insertedRows.length) {
-      await this.sensors.save(s);
-      this.notifyInserted(u.sub, s.id, insertedRows).catch((err) => {
+    if (inserted > 0) {
+      if (inserted > 0) await this.sensors.save(s);
+      const persistedRows = insertedRows.slice(0, inserted);
+      this.notifyInserted(u.sub, s.id, persistedRows).catch((err) => {
         this.log.warn(`Bulk glucose alert notify failed: ${err instanceof Error ? err.message : err}`);
       });
     }
 
     if (affectedDates.size > 0) {
       for (const d of affectedDates) {
-        this.workers.computeAndSaveDailySummary(u.sub, d).catch(() => {});
+        await this.workers.enqueueDailySummary(u.sub, d);
       }
     }
 

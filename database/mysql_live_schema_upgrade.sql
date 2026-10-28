@@ -23,6 +23,30 @@ ALTER TABLE `GlucoseMeasurements`
   ADD COLUMN IF NOT EXISTS `SequenceNumber` INT UNSIGNED NULL AFTER `DeviceId`,
   MODIFY COLUMN `MeasurementTime` DATETIME(3) NOT NULL;
 
+ALTER TABLE `AlertQueue`
+  ADD COLUMN IF NOT EXISTS `ProcessingStartedAt` DATETIME NULL AFTER `Status`,
+  ADD COLUMN IF NOT EXISTS `LeaseExpiresAt` DATETIME NULL AFTER `ProcessingStartedAt`,
+  ADD COLUMN IF NOT EXISTS `LeaseOwner` VARCHAR(100) NULL AFTER `LeaseExpiresAt`;
+
+CREATE TABLE IF NOT EXISTS `DailySummaryJobs` (
+  `Id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `UserId` INT UNSIGNED NOT NULL,
+  `SummaryDate` DATE NOT NULL,
+  `Status` VARCHAR(20) NOT NULL DEFAULT 'Pending',
+  `RetryCount` INT NOT NULL DEFAULT 0,
+  `NextAttemptAt` DATETIME(6) NULL,
+  `LeaseOwner` VARCHAR(100) NULL,
+  `LeaseExpiresAt` DATETIME(6) NULL,
+  `RequestedVersion` BIGINT UNSIGNED NOT NULL DEFAULT 1,
+  `ProcessedVersion` BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  `LastError` TEXT NULL,
+  `CreatedAt` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `UpdatedAt` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`Id`),
+  UNIQUE KEY `uq_daily_summary_jobs_user_date` (`UserId`, `SummaryDate`),
+  KEY `idx_daily_summary_jobs_poll` (`Status`, `NextAttemptAt`, `LeaseExpiresAt`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Application versions: fields accepted by the API DTO.
 ALTER TABLE `AppVersions`
   ADD COLUMN IF NOT EXISTS `MinimumSupportedVersion` VARCHAR(50) NULL AFTER `VersionCode`,

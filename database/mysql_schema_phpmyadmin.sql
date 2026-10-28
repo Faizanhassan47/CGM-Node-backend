@@ -200,6 +200,9 @@ CREATE TABLE IF NOT EXISTS `AlertQueue` (
   `Id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `AlertId` INT UNSIGNED NOT NULL,
   `Status` VARCHAR(50) NOT NULL DEFAULT 'Pending',
+  `ProcessingStartedAt` DATETIME NULL,
+  `LeaseExpiresAt` DATETIME NULL,
+  `LeaseOwner` VARCHAR(100) NULL,
   `RetryCount` INT NOT NULL DEFAULT 0,
   `NextAttemptAt` DATETIME NULL,
   `ProcessedAt` DATETIME NULL,
@@ -207,6 +210,7 @@ CREATE TABLE IF NOT EXISTS `AlertQueue` (
   `CreatedAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`Id`),
   KEY `idx_alert_queue_work` (`Status`, `NextAttemptAt`, `CreatedAt`),
+  KEY `idx_alert_queue_lease` (`Status`, `LeaseExpiresAt`),
   KEY `idx_alert_queue_alert` (`AlertId`),
   CONSTRAINT `fk_alert_queue_alert`
     FOREIGN KEY (`AlertId`) REFERENCES `Alerts` (`Id`)
@@ -214,6 +218,26 @@ CREATE TABLE IF NOT EXISTS `AlertQueue` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 09. Alert rules
+CREATE TABLE IF NOT EXISTS `DailySummaryJobs` (
+  `Id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `UserId` INT UNSIGNED NOT NULL,
+  `SummaryDate` DATE NOT NULL,
+  `Status` VARCHAR(20) NOT NULL DEFAULT 'Pending',
+  `RetryCount` INT NOT NULL DEFAULT 0,
+  `NextAttemptAt` DATETIME(6) NULL,
+  `LeaseOwner` VARCHAR(100) NULL,
+  `LeaseExpiresAt` DATETIME(6) NULL,
+  `RequestedVersion` BIGINT UNSIGNED NOT NULL DEFAULT 1,
+  `ProcessedVersion` BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  `LastError` TEXT NULL,
+  `CreatedAt` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  `UpdatedAt` DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (`Id`),
+  UNIQUE KEY `uq_daily_summary_jobs_user_date` (`UserId`, `SummaryDate`),
+  KEY `idx_daily_summary_jobs_poll` (`Status`, `NextAttemptAt`, `LeaseExpiresAt`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 10. Alert rules
 CREATE TABLE IF NOT EXISTS `AlertRules` (
   `Id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `UserId` INT UNSIGNED NOT NULL,
