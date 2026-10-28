@@ -118,16 +118,30 @@ export class GlucoseController {
     const s = await this.sensor(dto.sensorId, u.sub);
     const error = this.validate(s, dto);
     if (error) throw new BadRequestException({ message: error });
-    const duplicate = await this.readings.exist({ where: { sensorId: s.id, measurementTime: new Date(dto.measurementTime) } });
-    if (duplicate) return { message: 'Duplicate reading skipped.', measurementTime: dto.measurementTime };
-    await this.readings.save(this.entity(u.sub, s, dto));
-    if (!s.lastReadingAt || new Date(dto.measurementTime) > s.lastReadingAt) {
-      s.lastReadingAt = new Date(dto.measurementTime);
-      await this.sensors.save(s);
+    const runner = this.db.createQueryRunner();
+    await runner.connect();
+    await runner.startTransaction();
+    const measurementTime = new Date(dto.measurementTime);
+    try {
+      const duplicate = await runner.manager.findOne(GlucoseMeasurement, { where: { sensorId: s.id, measurementTime } });
+      if (duplicate) {
+        await runner.rollbackTransaction();
+        return { message: 'Duplicate reading skipped.', measurementTime: dto.measurementTime };
+      }
+      await runner.manager.save(GlucoseMeasurement, this.entity(u.sub, s, dto));
+      if (!s.lastReadingAt || measurementTime > s.lastReadingAt) {
+        s.lastReadingAt = measurementTime;
+        await runner.manager.save(Sensor, s);
+      }
+      await this.workers.enqueueDailySummary(u.sub, measurementTime.toISOString().slice(0, 10), runner);
+      await runner.commitTransaction();
+    } catch (e) {
+      await runner.rollbackTransaction();
+      throw e;
+    } finally {
+      await runner.release();
     }
-    try { await this.notify(u.sub, s.id, dto.glucoseValue, new Date(dto.measurementTime)); } catch(_) {}
-    const dateStr = new Date(dto.measurementTime).toISOString().slice(0, 10);
-    await this.workers.enqueueDailySummary(u.sub, dateStr);
+    try { await this.notify(u.sub, s.id, dto.glucoseValue, measurementTime); } catch(_) {}
     return { message: 'Measurement saved successfully.', measurementTime: dto.measurementTime };
   }
 
@@ -151,56 +165,39 @@ export class GlucoseController {
     const acknowledged: number[] = [];
     const affectedDates = new Set<string>();
     const insertedRows: Array<{ value: number; time: Date }> = [];
-
-    for (const d of uniqueMeasurements) {
-      if (d.sequenceNumber != null) acknowledged.push(d.sequenceNumber);
-      const measurementTime = new Date(d.measurementTime);
-      affectedDates.add(measurementTime.toISOString().slice(0, 10));
-      insertedRows.push({ value: d.glucoseValue, time: measurementTime });
-      if (!s.lastReadingAt || measurementTime > s.lastReadingAt) {
-        s.lastReadingAt = measurementTime;
-      }
-    }
-
-    if (uniqueMeasurements.length) {
-      const values = uniqueMeasurements.map((d) => this.entity(u.sub, s, d));
-      if (this.db.options.type === 'mysql' || this.db.options.type === 'mariadb') {
-        const result = await this.readings
-          .createQueryBuilder()
-          .insert()
-          .values(values)
-          .orIgnore()
-          .execute();
-        inserted = Number(result.raw?.affectedRows ?? result.identifiers?.length ?? 0);
-      } else {
-        // SQL Server has the same composite primary key, but TypeORM's
-        // portable insert-ignore syntax is not available for it. Keep this
-        // fallback race-safe by treating a duplicate-key error as a skip.
-        for (const value of values) {
-          try {
-            await this.readings.insert(value);
-            inserted++;
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            if (!/duplicate|primary key|unique/i.test(message)) throw error;
-          }
+    const runner = this.db.createQueryRunner();
+    await runner.connect();
+    await runner.startTransaction();
+    try {
+      for (const d of uniqueMeasurements) {
+        const measurementTime = new Date(d.measurementTime);
+        const duplicate = await runner.manager.findOne(GlucoseMeasurement, { where: { sensorId: s.id, measurementTime } });
+        if (duplicate) continue;
+        try {
+          await runner.manager.save(GlucoseMeasurement, this.entity(u.sub, s, d));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (/duplicate|primary key|unique/i.test(message)) continue;
+          throw error;
         }
+        inserted++;
+        if (d.sequenceNumber != null) acknowledged.push(d.sequenceNumber);
+        affectedDates.add(measurementTime.toISOString().slice(0, 10));
+        insertedRows.push({ value: d.glucoseValue, time: measurementTime });
+        if (!s.lastReadingAt || measurementTime > s.lastReadingAt) s.lastReadingAt = measurementTime;
       }
+      if (inserted > 0) await runner.manager.save(Sensor, s);
+      for (const date of affectedDates) await this.workers.enqueueDailySummary(u.sub, date, runner);
+      await runner.commitTransaction();
+    } catch (e) {
+      await runner.rollbackTransaction();
+      throw e;
+    } finally {
+      await runner.release();
     }
-
-    if (inserted > 0) {
-      if (inserted > 0) await this.sensors.save(s);
-      const persistedRows = insertedRows.slice(0, inserted);
-      this.notifyInserted(u.sub, s.id, persistedRows).catch((err) => {
-        this.log.warn(`Bulk glucose alert notify failed: ${err instanceof Error ? err.message : err}`);
-      });
-    }
-
-    if (affectedDates.size > 0) {
-      for (const d of affectedDates) {
-        await this.workers.enqueueDailySummary(u.sub, d);
-      }
-    }
+    if (inserted > 0) this.notifyInserted(u.sub, s.id, insertedRows).catch((err) => {
+      this.log.warn(`Bulk glucose alert notify failed: ${err instanceof Error ? err.message : err}`);
+    });
 
     return {
       insertedCount: inserted,

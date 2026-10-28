@@ -3,7 +3,7 @@ import { ConfigService } from "@nestjs/config";
 import { Cron, CronExpression, Interval } from "@nestjs/schedule";
 import * as nodemailer from "nodemailer";
 import { randomUUID } from "crypto";
-import { DataSource } from "typeorm";
+import { DataSource, QueryRunner } from "typeorm";
 import { normalizeSql } from "../common/sql-helper";
 import { FirebaseAdminService } from "../firebase/firebase-admin.service";
 @Injectable()
@@ -27,15 +27,19 @@ export class WorkersService {
     if (!iso) throw new Error(`Invalid DailySummaryJobs date: ${text}`);
     return iso;
   }
-  public async enqueueDailySummary(userId: number, dateStr: string) {
+  public async enqueueDailySummary(userId: number, dateStr: string, runner?: QueryRunner) {
+    const execute = (sql: string, params?: unknown[]) =>
+      runner
+        ? runner.query(normalizeSql(sql, this.db), params)
+        : this.q(sql, params);
     if (this.db.options.type === 'mssql') {
-      await this.q(
+      await execute(
         'IF EXISTS (SELECT 1 FROM DailySummaryJobs WHERE UserId=? AND SummaryDate=?) UPDATE DailySummaryJobs SET RequestedVersion=RequestedVersion+1,Status=CASE WHEN Status="Completed" THEN "Pending" ELSE Status END,UpdatedAt=GETUTCDATE() WHERE UserId=? AND SummaryDate=? ELSE INSERT INTO DailySummaryJobs(UserId,SummaryDate,Status,RequestedVersion,ProcessedVersion,CreatedAt,UpdatedAt) VALUES(?,?,"Pending",1,0,GETUTCDATE(),GETUTCDATE())',
         [userId, dateStr, userId, dateStr, userId, dateStr],
       );
       return;
     }
-    await this.q(
+    await execute(
       'INSERT INTO DailySummaryJobs(UserId,SummaryDate,Status,RequestedVersion,ProcessedVersion) VALUES(?,? ,"Pending",1,0) ON DUPLICATE KEY UPDATE RequestedVersion=RequestedVersion+1,Status=IF(Status="Completed","Pending",Status),UpdatedAt=UTC_TIMESTAMP(6)',
       [userId, dateStr],
     );

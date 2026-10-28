@@ -1,7 +1,7 @@
 
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -18,6 +18,7 @@ import { CompatModule } from './compat/compat.module';
 import { FamilyModule } from './family/family.module';
 import { WorkersModule } from './workers/workers.module';
 import { WellnessModule } from './wellness/wellness.module';
+import { ApiMetricsInterceptor } from './common/interceptors/api-metrics.interceptor';
 
 @Module({
   imports: [
@@ -92,6 +93,12 @@ import { WellnessModule } from './wellness/wellness.module';
     {
       provide: APP_GUARD,
       useClass: JwtAuthGuard,
+    },
+
+    // Low-overhead request timing; never logs request bodies or credentials.
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: ApiMetricsInterceptor,
     },
   ],
 })
