@@ -109,13 +109,17 @@ export class WorkersService {
     }
   }
   private async external(channel: string, address: string, payload: unknown) {
+    if (channel === "Push") {
+      const sent = await this.sendFcm(address, payload);
+      if (sent) return true;
+    }
     const prefix =
       channel === "Push" ? "PUSH" : channel === "SMS" ? "SMS" : null;
     if (!prefix) return false;
     const url = this.config.get<string>(`${prefix}_PROVIDER_URL`);
     const key = this.config.get<string>(`${prefix}_PROVIDER_KEY`);
     if (!url || !key) {
-      this.log.warn(`${channel} provider is not configured`);
+      if (channel !== "Push") this.log.warn(`${channel} provider is not configured`);
       return false;
     }
     try {
@@ -136,6 +140,45 @@ export class WorkersService {
       return response.ok;
     } catch (error) {
       this.log.error(`${channel} provider request failed`, error);
+      return false;
+    }
+  }
+
+  private async sendFcm(token: string, payload: unknown): Promise<boolean> {
+    const key =
+      this.config.get<string>("FCM_SERVER_KEY") ||
+      this.config.get<string>("FIREBASE_SERVER_KEY");
+    if (!key || !token) return false;
+    const data = (payload ?? {}) as { title?: string; message?: string; alertId?: number };
+    try {
+      const response = await fetch("https://fcm.googleapis.com/fcm/send", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `key=${key}`,
+        },
+        body: JSON.stringify({
+          to: token,
+          priority: "high",
+          notification: {
+            title: data.title || "Circle alert",
+            body: data.message || "",
+            sound: "default",
+          },
+          data: {
+            title: String(data.title || "Circle alert"),
+            body: String(data.message || ""),
+            alertId: String(data.alertId ?? ""),
+          },
+        }),
+      });
+      if (!response.ok) {
+        this.log.error(`FCM returned HTTP ${response.status}`);
+        return false;
+      }
+      return true;
+    } catch (error) {
+      this.log.error("FCM request failed", error);
       return false;
     }
   }

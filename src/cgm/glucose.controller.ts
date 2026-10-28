@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, NotFoundException, Post, Query } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Logger, NotFoundException, Post, Query } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Between, DataSource, FindOptionsWhere, MoreThanOrEqual, Repository } from 'typeorm';
 import { AuthUser, CurrentUser } from '../common/auth-user';
@@ -7,9 +7,11 @@ import { BulkSyncDto, MeasurementDto } from './cgm.dto';
 import { GlucoseGateway } from '../realtime/glucose.gateway';
 import { normalizeSql } from '../common/sql-helper';
 import { WorkersService } from '../workers/workers.service';
+import { asBool, evaluateGlucoseAlert, pickDominantAlert } from './glucose-alerts';
 
 @Controller('api/Glucose')
 export class GlucoseController {
+  private readonly log = new Logger(GlucoseController.name);
   constructor(
     @InjectRepository(GlucoseMeasurement) private readonly readings: Repository<GlucoseMeasurement>,
     @InjectRepository(Sensor) private readonly sensors: Repository<Sensor>,
@@ -20,78 +22,91 @@ export class GlucoseController {
   private q(sql: string, params?: unknown[]) { return this.db.query(normalizeSql(sql, this.db), params); }
   private async notify(userId: number, sensorId: number, value: number, time: Date) {
     try {
-      let type: string | undefined, title: string | undefined, severity: string | undefined;
-
-      // Check user profile thresholds & sleep schedule for dynamic alerts
-      const profiles = await this.q('SELECT TargetLow, TargetHigh, UrgentLowThreshold, UrgentHighThreshold, BedTime, WakeTime, NightLowThreshold, NightAlertsEnabled FROM PatientProfile WHERE UserId=?', [userId]);
+      const profiles = await this.q(
+        'SELECT TargetLow, TargetHigh, UrgentLowThreshold, UrgentHighThreshold, BedTime, WakeTime, NightLowThreshold, NightAlertsEnabled, PushNotificationsEnabled, CriticalGlucoseAlertsEnabled FROM PatientProfile WHERE UserId=?',
+        [userId],
+      );
       const p = profiles[0] || {};
-      const targetLow = Number(p.TargetLow ?? 90.0);
-      const targetHigh = Number(p.TargetHigh ?? 130.0);
-      const urgentLow = Number(p.UrgentLowThreshold ?? 55.0);
-      const urgentHigh = Number(p.UrgentHighThreshold ?? 250.0);
-      const bedTime = p.BedTime || '22:00';
-      const wakeTime = p.WakeTime || '07:00';
-      const nightLow = Number(p.NightLowThreshold ?? 70.0);
-      const nightAlertsEnabled = p.NightAlertsEnabled ?? true;
+      const hit = evaluateGlucoseAlert({
+        value,
+        time,
+        targetLow: Number(p.TargetLow ?? 90.0),
+        targetHigh: Number(p.TargetHigh ?? 130.0),
+        urgentLow: Number(p.UrgentLowThreshold ?? 55.0),
+        urgentHigh: Number(p.UrgentHighThreshold ?? 250.0),
+        bedTime: p.BedTime || '22:00',
+        wakeTime: p.WakeTime || '07:00',
+        nightLow: Number(p.NightLowThreshold ?? 70.0),
+        nightAlertsEnabled: asBool(p.NightAlertsEnabled, true),
+        criticalAlertsEnabled: asBool(p.CriticalGlucoseAlertsEnabled, true),
+      });
 
-      const [bH, bM] = bedTime.split(':').map(Number);
-      const [wH, wM] = wakeTime.split(':').map(Number);
-      const curMinutes = time.getHours() * 60 + time.getMinutes();
-      const bedMinutes = bH * 60 + bM;
-      const wakeMinutes = wH * 60 + wM;
-
-      let isSleepTime = false;
-      if (bedMinutes > wakeMinutes) {
-        isSleepTime = curMinutes >= bedMinutes || curMinutes <= wakeMinutes;
-      } else {
-        isSleepTime = curMinutes >= bedMinutes && curMinutes <= wakeMinutes;
-      }
-
-      if (isSleepTime && nightAlertsEnabled && value < nightLow) {
-        type = 'NocturnalHypo';
-        title = '🚨 Urgent Nocturnal Low Glucose';
-        severity = 'Critical';
-      } else if (value <= urgentLow) {
-        type = 'UrgentLow';
-        title = '🚨 Critical Urgent Low Glucose';
-        severity = 'Critical';
-      } else if (value < targetLow) {
-        type = 'LowGlucose';
-        title = 'Low Glucose';
-        severity = value <= urgentLow + 10 ? 'Critical' : 'Warning';
-      } else if (value >= urgentHigh) {
-        type = 'UrgentHigh';
-        title = '🚨 Critical Urgent High Glucose';
-        severity = 'Critical';
-      } else if (value > targetHigh) {
-        type = 'HighGlucose';
-        title = 'High Glucose';
-        severity = value >= urgentHigh - 20 ? 'Critical' : 'Warning';
-      }
-
-      if (type) {
-        await this.q(
-          'INSERT INTO Alerts(UserId,SensorId,AlertType,Title,Message,GlucoseValue,GlucoseUnit,Severity,IsRead,AlertTime,CreatedAt) VALUES(?,?,?,?,?,?,?,?,0,?,UTC_TIMESTAMP())',
-          [userId, sensorId, type, title, `${title}: ${value} mg/dL`, value, 'mg/dL', severity, time],
+      if (hit) {
+        const recent = await this.q(
+          'SELECT Id FROM Alerts WHERE UserId=? AND AlertType=? AND AlertTime>=? ORDER BY AlertTime DESC',
+          [userId, hit.type, new Date(time.getTime() - 15 * 60_000)],
         );
-        const aRow = (await this.q('SELECT TOP 1 Id FROM Alerts WHERE UserId=? ORDER BY Id DESC', [userId]))[0];
-        const alertId = aRow?.Id ?? aRow?.id;
-        const recipients = await this.q(
-          'SELECT DISTINCT UserId FROM FamilyMembers WHERE FamilyId IN (SELECT Id FROM Families WHERE OwnerUserId=? UNION SELECT FamilyId FROM FamilyMembers WHERE UserId=? AND Status="Active") AND Status="Active" AND ReceiveAlerts=1',
-          [userId, userId],
-        );
-        const targetUserIds = [userId, ...recipients.map((r: Record<string, number>) => r.UserId ?? r.userId)];
-        for (const uid of [...new Set(targetUserIds)]) {
-          const existing = await this.q('SELECT 1 FROM AlertRecipients WHERE AlertId=? AND UserId=?', [alertId, uid]);
-          if (!existing.length) {
-            await this.q('INSERT INTO AlertRecipients(AlertId,UserId,IsRead,CreatedAt) VALUES(?,?,0,UTC_TIMESTAMP())', [alertId, uid]);
+        if (!recent.length) {
+          await this.q(
+            'INSERT INTO Alerts(UserId,SensorId,AlertType,Title,Message,GlucoseValue,GlucoseUnit,Severity,IsRead,AlertTime,CreatedAt) VALUES(?,?,?,?,?,?,?,?,0,?,UTC_TIMESTAMP())',
+            [userId, sensorId, hit.type, hit.title, `${hit.title}: ${value} mg/dL`, value, 'mg/dL', hit.severity, time],
+          );
+          const aRow = (await this.q('SELECT TOP 1 Id FROM Alerts WHERE UserId=? ORDER BY Id DESC', [userId]))[0];
+          const alertId = aRow?.Id ?? aRow?.id;
+          if (alertId) {
+            const recipients = await this.q(
+              'SELECT DISTINCT UserId FROM FamilyMembers WHERE FamilyId IN (SELECT Id FROM Families WHERE OwnerUserId=? UNION SELECT FamilyId FROM FamilyMembers WHERE UserId=? AND Status="Active") AND Status="Active" AND ReceiveAlerts=1',
+              [userId, userId],
+            );
+            const targetUserIds = [userId, ...recipients.map((r: Record<string, number>) => r.UserId ?? r.userId)];
+            for (const uid of [...new Set(targetUserIds)]) {
+              const existing = await this.q('SELECT 1 FROM AlertRecipients WHERE AlertId=? AND UserId=?', [alertId, uid]);
+              if (!existing.length) {
+                await this.q('INSERT INTO AlertRecipients(AlertId,UserId,IsRead,CreatedAt) VALUES(?,?,0,UTC_TIMESTAMP())', [alertId, uid]);
+              }
+            }
+            await this.q('INSERT INTO AlertQueue(AlertId,Status,RetryCount,CreatedAt) VALUES(?,"Pending",0,UTC_TIMESTAMP())', [alertId]);
           }
         }
-        await this.q('INSERT INTO AlertQueue(AlertId,Status,RetryCount,CreatedAt) VALUES(?,"Pending",0,UTC_TIMESTAMP())', [alertId]);
       }
       const families = await this.q('SELECT Id FROM Families WHERE OwnerUserId=? UNION SELECT FamilyId Id FROM FamilyMembers WHERE UserId=? AND Status="Active"', [userId, userId]);
       this.gateway.publish(families.map((x: Record<string, number>) => x.Id ?? x.id), { userId, glucoseValue: value, measurementTime: time });
-    } catch (_) {}
+    } catch (err) {
+      this.log.warn(`Glucose alert evaluation failed for user ${userId}: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+  private async notifyInserted(userId: number, sensorId: number, rows: Array<{ value: number; time: Date }>) {
+    if (!rows.length) return;
+    const profiles = await this.q(
+      'SELECT TargetLow, TargetHigh, UrgentLowThreshold, UrgentHighThreshold, BedTime, WakeTime, NightLowThreshold, NightAlertsEnabled, CriticalGlucoseAlertsEnabled FROM PatientProfile WHERE UserId=?',
+      [userId],
+    );
+    const p = profiles[0] || {};
+    const hits = rows
+      .map((row) => {
+        const hit = evaluateGlucoseAlert({
+          value: row.value,
+          time: row.time,
+          targetLow: Number(p.TargetLow ?? 90.0),
+          targetHigh: Number(p.TargetHigh ?? 130.0),
+          urgentLow: Number(p.UrgentLowThreshold ?? 55.0),
+          urgentHigh: Number(p.UrgentHighThreshold ?? 250.0),
+          bedTime: p.BedTime || '22:00',
+          wakeTime: p.WakeTime || '07:00',
+          nightLow: Number(p.NightLowThreshold ?? 70.0),
+          nightAlertsEnabled: asBool(p.NightAlertsEnabled, true),
+          criticalAlertsEnabled: asBool(p.CriticalGlucoseAlertsEnabled, true),
+        });
+        return hit ? { ...hit, value: row.value, time: row.time } : null;
+      })
+      .filter((row): row is NonNullable<typeof row> => Boolean(row));
+    const dominant = pickDominantAlert(hits);
+    const latest = rows.reduce((best, row) => (row.time > best.time ? row : best), rows[0]);
+    if (dominant) {
+      await this.notify(userId, sensorId, dominant.value, dominant.time);
+    } else {
+      await this.notify(userId, sensorId, latest.value, latest.time);
+    }
   }
   private validate(s: Sensor, d: MeasurementDto) { const time = new Date(d.measurementTime); if (!s.isActive || ['Expired', 'Stopped'].includes(s.status)) return 'The sensor session is not active.'; if (!s.activatedAt || time < s.activatedAt) return 'Warm-up measurements cannot be uploaded as glucose readings.'; if (s.expiresAt && time > s.expiresAt) return 'The measurement occurred after the sensor expired.'; if (time > new Date(Date.now() + 300_000)) return 'The measurement timestamp is in the future.'; return null; }
   private entity(userId: number, s: Sensor, d: MeasurementDto) { return this.readings.create({ userId, sensorId: s.id, deviceId: s.deviceId, sequenceNumber: d.sequenceNumber ?? null, glucoseValue: String(d.glucoseValue), measurementTime: new Date(d.measurementTime), batteryVoltageMv: d.batteryVoltageMv ?? null, deviceTemperatureC: d.deviceTemperatureC == null ? null : String(d.deviceTemperatureC), we1CurrentNa: d.we1CurrentNa == null ? null : String(d.we1CurrentNa), isSynced: true, createdAt: new Date() }); }
@@ -123,15 +138,28 @@ export class GlucoseController {
     let inserted = 0;
     const acknowledged: number[] = [];
     const affectedDates = new Set<string>();
+    const insertedRows: Array<{ value: number; time: Date }> = [];
 
     for (const d of dto.measurements) {
       if (d.sequenceNumber != null) acknowledged.push(d.sequenceNumber);
-      const duplicate = await this.readings.exist({ where: { sensorId: s.id, measurementTime: new Date(d.measurementTime) } });
+      const measurementTime = new Date(d.measurementTime);
+      const duplicate = await this.readings.exist({ where: { sensorId: s.id, measurementTime } });
       if (!duplicate) {
         await this.readings.save(this.entity(u.sub, s, d));
         inserted++;
-        affectedDates.add(new Date(d.measurementTime).toISOString().slice(0, 10));
+        affectedDates.add(measurementTime.toISOString().slice(0, 10));
+        insertedRows.push({ value: d.glucoseValue, time: measurementTime });
+        if (!s.lastReadingAt || measurementTime > s.lastReadingAt) {
+          s.lastReadingAt = measurementTime;
+        }
       }
+    }
+
+    if (insertedRows.length) {
+      await this.sensors.save(s);
+      this.notifyInserted(u.sub, s.id, insertedRows).catch((err) => {
+        this.log.warn(`Bulk glucose alert notify failed: ${err instanceof Error ? err.message : err}`);
+      });
     }
 
     if (affectedDates.size > 0) {

@@ -10,7 +10,9 @@ ALTER TABLE `Users`
   ADD COLUMN IF NOT EXISTS `ProfilePictureUrl` VARCHAR(500) NULL AFTER `IsActive`;
 
 ALTER TABLE `PatientProfile`
-  ADD COLUMN IF NOT EXISTS `ProfilePictureUrl` VARCHAR(500) NULL AFTER `Gender`;
+  ADD COLUMN IF NOT EXISTS `ProfilePictureUrl` VARCHAR(500) NULL AFTER `Gender`,
+  ADD COLUMN IF NOT EXISTS `PushNotificationsEnabled` TINYINT(1) NOT NULL DEFAULT 1 AFTER `NightAlertsEnabled`,
+  ADD COLUMN IF NOT EXISTS `CriticalGlucoseAlertsEnabled` TINYINT(1) NOT NULL DEFAULT 1 AFTER `PushNotificationsEnabled`;
 
 -- Sensors: persist when a sensor session ended.
 ALTER TABLE `Sensors`

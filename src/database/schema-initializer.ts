@@ -49,6 +49,8 @@ export async function ensureTablesExist(dataSource: DataSource): Promise<void> {
        NightLowThreshold DECIMAL(5,1) NOT NULL DEFAULT 70.0,
        NightHighThreshold DECIMAL(5,1) NOT NULL DEFAULT 160.0,
        NightAlertsEnabled BIT NOT NULL DEFAULT 1,
+       PushNotificationsEnabled BIT NOT NULL DEFAULT 1,
+       CriticalGlucoseAlertsEnabled BIT NOT NULL DEFAULT 1,
        CreatedAt DATETIME NOT NULL DEFAULT GETUTCDATE(),
        UpdatedAt DATETIME NULL
      );`,
@@ -314,7 +316,13 @@ export async function ensureTablesExist(dataSource: DataSource): Promise<void> {
      ALTER TABLE PatientProfile ADD NightHighThreshold DECIMAL(5,1) NOT NULL DEFAULT 160.0;`,
 
     `IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('PatientProfile') AND name = 'NightAlertsEnabled')
-     ALTER TABLE PatientProfile ADD NightAlertsEnabled BIT NOT NULL DEFAULT 1;`
+     ALTER TABLE PatientProfile ADD NightAlertsEnabled BIT NOT NULL DEFAULT 1;`,
+
+    `IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('PatientProfile') AND name = 'PushNotificationsEnabled')
+     ALTER TABLE PatientProfile ADD PushNotificationsEnabled BIT NOT NULL DEFAULT 1;`,
+
+    `IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('PatientProfile') AND name = 'CriticalGlucoseAlertsEnabled')
+     ALTER TABLE PatientProfile ADD CriticalGlucoseAlertsEnabled BIT NOT NULL DEFAULT 1;`
   ];
 
   const mysqlDDL = [
@@ -358,6 +366,8 @@ export async function ensureTablesExist(dataSource: DataSource): Promise<void> {
        NightLowThreshold DECIMAL(5,1) NOT NULL DEFAULT 70.0,
        NightHighThreshold DECIMAL(5,1) NOT NULL DEFAULT 160.0,
        NightAlertsEnabled TINYINT(1) NOT NULL DEFAULT 1,
+       PushNotificationsEnabled TINYINT(1) NOT NULL DEFAULT 1,
+       CriticalGlucoseAlertsEnabled TINYINT(1) NOT NULL DEFAULT 1,
        CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
        UpdatedAt DATETIME NULL
      );`,
@@ -594,6 +604,8 @@ export async function ensureTablesExist(dataSource: DataSource): Promise<void> {
   const requiredColumns = [
     { table: 'Users', column: 'ProfilePictureUrl', definition: isMssql ? 'NVARCHAR(500) NULL' : 'VARCHAR(500) NULL' },
     { table: 'PatientProfile', column: 'ProfilePictureUrl', definition: isMssql ? 'NVARCHAR(500) NULL' : 'VARCHAR(500) NULL' },
+    { table: 'PatientProfile', column: 'PushNotificationsEnabled', definition: isMssql ? 'BIT NOT NULL DEFAULT 1' : 'TINYINT(1) NOT NULL DEFAULT 1' },
+    { table: 'PatientProfile', column: 'CriticalGlucoseAlertsEnabled', definition: isMssql ? 'BIT NOT NULL DEFAULT 1' : 'TINYINT(1) NOT NULL DEFAULT 1' },
   ];
 
   for (const { table, column, definition } of requiredColumns) {

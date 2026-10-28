@@ -42,6 +42,8 @@ export class PatientProfile {
   @Column({ name: 'NightLowThreshold', type: 'decimal', precision: 5, scale: 1, default: 70.0 }) nightLowThreshold!: number;
   @Column({ name: 'NightHighThreshold', type: 'decimal', precision: 5, scale: 1, default: 160.0 }) nightHighThreshold!: number;
   @Column({ name: 'NightAlertsEnabled', default: true }) nightAlertsEnabled!: boolean;
+  @Column({ name: 'PushNotificationsEnabled', default: true }) pushNotificationsEnabled!: boolean;
+  @Column({ name: 'CriticalGlucoseAlertsEnabled', default: true }) criticalGlucoseAlertsEnabled!: boolean;
   @Column({ name: 'CreatedAt', type: 'datetime' }) createdAt!: Date;
   @Column({ name: 'UpdatedAt', type: 'datetime', nullable: true }) updatedAt!: Date | null;
 }

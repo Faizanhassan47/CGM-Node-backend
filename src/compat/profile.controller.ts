@@ -45,6 +45,8 @@ class ProfileDto {
   @IsOptional() @IsNumber() nightLowThreshold?: number;
   @IsOptional() @IsNumber() nightHighThreshold?: number;
   @IsOptional() @IsBoolean() nightAlertsEnabled?: boolean;
+  @IsOptional() @IsBoolean() pushNotificationsEnabled?: boolean;
+  @IsOptional() @IsBoolean() criticalGlucoseAlertsEnabled?: boolean;
 }
 
 @Controller("api/Profile")
@@ -90,6 +92,8 @@ export class ProfileController {
       nightLowThreshold: Number(p.nightLowThreshold ?? 70.0),
       nightHighThreshold: Number(p.nightHighThreshold ?? 160.0),
       nightAlertsEnabled: p.nightAlertsEnabled ?? true,
+      pushNotificationsEnabled: p.pushNotificationsEnabled ?? true,
+      criticalGlucoseAlertsEnabled: p.criticalGlucoseAlertsEnabled ?? true,
       referralCode: user.referralCode ?? "",
     };
   }
@@ -174,6 +178,14 @@ export class ProfileController {
         dto.nightAlertsEnabled != null
           ? dto.nightAlertsEnabled
           : (profile.nightAlertsEnabled ?? true),
+      pushNotificationsEnabled:
+        dto.pushNotificationsEnabled != null
+          ? dto.pushNotificationsEnabled
+          : (profile.pushNotificationsEnabled ?? true),
+      criticalGlucoseAlertsEnabled:
+        dto.criticalGlucoseAlertsEnabled != null
+          ? dto.criticalGlucoseAlertsEnabled
+          : (profile.criticalGlucoseAlertsEnabled ?? true),
       profileCompleted: true,
       updatedAt: new Date(),
     });
