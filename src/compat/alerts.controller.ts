@@ -8,7 +8,40 @@ class RuleDto { @IsString() alertType!: string; @IsOptional() @IsNumber() minimu
 export class AlertsController {
   constructor(private db: DataSource) {}
   private q(sql: string, params?: unknown[]) { return this.db.query(normalizeSql(sql, this.db), params); }
-  @Get() async list(@CurrentUser() u: AuthUser, @Query('severity') severity?: string, @Query('unreadOnly') unread?: string) { let sql = 'SELECT a.Id id, IF(a.AlertType="HighGlucose",1,0) category,a.Title title,a.Message message,a.AlertTime timestamp,a.GlucoseValue glucoseValue,IF(a.GlucoseUnit="mmol/L",1,0) unit,r.IsRead isRead,IF(a.Severity="Critical",1,0) isCritical,a.UserId patientUserId FROM AlertRecipients r JOIN Alerts a ON a.Id=r.AlertId WHERE r.UserId=?'; const args: unknown[] = [u.sub]; if (severity) { sql += ' AND a.Severity=?'; args.push(severity); } if (unread === 'true') sql += ' AND r.IsRead=0'; return this.q(`${sql} ORDER BY a.AlertTime DESC LIMIT 50`, args); }
+  @Get() async list(@CurrentUser() u: AuthUser, @Query('severity') severity?: string, @Query('unreadOnly') unread?: string) {
+    // Alerts created for the patient may not have an AlertRecipients row
+    // (for example legacy rows or family notifications). Include those rows
+    // while keeping all activity scoped to the authenticated user.
+    let sql = `SELECT * FROM (
+      SELECT CONCAT('alert:', a.Id) id, IF(a.AlertType="HighGlucose",1,0) category,
+        a.Title title, a.Message message, a.AlertTime timestamp, a.GlucoseValue glucoseValue,
+        IF(a.GlucoseUnit="mmol/L",1,0) unit, COALESCE(r.IsRead,a.IsRead,0) isRead,
+        IF(a.Severity="Critical",1,0) isCritical, a.UserId patientUserId, a.Severity severity
+      FROM Alerts a
+      LEFT JOIN AlertRecipients r ON a.Id=r.AlertId AND r.UserId=?
+      WHERE (a.UserId=? OR r.UserId IS NOT NULL)
+      ${severity ? 'AND a.Severity=?' : ''}
+      UNION ALL
+      SELECT CONCAT('meal:', m.Id) id, 2 category,
+        CONCAT('Meal logged: ', m.MealType) title,
+        m.FoodDescription message, m.OccurredAtUtc timestamp, NULL glucoseValue,
+        0 unit, 1 isRead, 0 isCritical, m.UserId patientUserId, 'Wellness' severity
+      FROM MealLogs m
+      WHERE m.UserId=? AND m.DeletedAt IS NULL
+      UNION ALL
+      SELECT CONCAT('water:', w.Id) id, 3 category,
+        'Water intake logged' title,
+        CONCAT(CAST(w.AmountMl AS CHAR), ' ml') message, w.OccurredAtUtc timestamp, NULL glucoseValue,
+        0 unit, 1 isRead, 0 isCritical, w.UserId patientUserId, 'Wellness' severity
+      FROM WaterIntakeLogs w
+      WHERE w.UserId=? AND w.DeletedAt IS NULL
+    ) activity`;
+    const args: unknown[] = [u.sub, u.sub];
+    if (severity) args.push(severity);
+    args.push(u.sub, u.sub);
+    if (unread === 'true') sql += ' WHERE isRead=0';
+    return this.q(`${sql} ORDER BY timestamp DESC LIMIT 50`, args);
+  }
   @Put(':id/read') async read(@CurrentUser() u: AuthUser, @Param('id') id: string) { const result = await this.q('UPDATE AlertRecipients SET IsRead=1,ReadAt=UTC_TIMESTAMP() WHERE AlertId=? AND UserId=?', [id, u.sub]); if (!result.affectedRows && !result.rowsAffected?.[0]) throw new NotFoundException(); return { message: 'Alert marked as read.' }; }
 }
 @Controller('api/alert-rules')
