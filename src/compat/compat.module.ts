@@ -8,6 +8,8 @@ import { ReportsController } from './reports.controller';
 import { AccountController } from './account.controller';
 import { AuthModule } from '../auth/auth.module';
 import { StorageService } from '../common/storage.service';
+import { DietAssistantController } from './diet-assistant.controller';
+import { DietAssistantService } from './diet-assistant.service';
 @Module({
   imports: [TypeOrmModule.forFeature([User, PatientProfile]), AuthModule],
   controllers: [
@@ -22,7 +24,8 @@ import { StorageService } from '../common/storage.service';
     AdminController,
     ReportsController,
     AccountController,
+    DietAssistantController,
   ],
-  providers: [StorageService],
+  providers: [StorageService, DietAssistantService],
 })
 export class CompatModule {}

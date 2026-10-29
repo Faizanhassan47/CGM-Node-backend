@@ -276,7 +276,7 @@ CREATE TABLE IF NOT EXISTS `WellnessReminderSettings` (
   `MealEnabled` TINYINT(1) NOT NULL DEFAULT 1, `WaterEnabled` TINYINT(1) NOT NULL DEFAULT 1,
   `WaterIntervalMinutes` INT NOT NULL DEFAULT 120, `DailyWaterGoalMl` INT NULL,
   `QuietHoursEnabled` TINYINT(1) NOT NULL DEFAULT 1, `QuietStart` VARCHAR(5) NOT NULL DEFAULT '22:00',
-  `QuietEnd` VARCHAR(5) NOT NULL DEFAULT '07:00', `TimeZoneId` VARCHAR(80) NOT NULL DEFAULT 'UTC',
+  `QuietEnd` VARCHAR(5) NOT NULL DEFAULT '07:00', `TimeZoneId` VARCHAR(80) NOT NULL DEFAULT 'Asia/Karachi',
   `CreatedAt` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, `UpdatedAt` DATETIME NULL,
   PRIMARY KEY (`Id`), UNIQUE KEY `uq_wellness_settings_user` (`UserId`),
   CONSTRAINT `fk_wellness_settings_user` FOREIGN KEY (`UserId`) REFERENCES `Users` (`Id`) ON DELETE CASCADE

@@ -12,7 +12,7 @@ export class WellnessReminderSettings {
   @Column({ name: 'QuietHoursEnabled', default: true }) quietHoursEnabled!: boolean;
   @Column({ name: 'QuietStart', length: 5, default: '22:00' }) quietStart!: string;
   @Column({ name: 'QuietEnd', length: 5, default: '07:00' }) quietEnd!: string;
-  @Column({ name: 'TimeZoneId', length: 80, default: 'UTC' }) timeZoneId!: string;
+  @Column({ name: 'TimeZoneId', length: 80, default: 'Asia/Karachi' }) timeZoneId!: string;
   @Column({ name: 'CreatedAt', type: 'datetime' }) createdAt!: Date;
   @Column({ name: 'UpdatedAt', type: 'datetime', nullable: true }) updatedAt!: Date | null;
 }

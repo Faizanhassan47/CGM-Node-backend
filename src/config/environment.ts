@@ -12,6 +12,8 @@ class Environment {
   @IsOptional() @IsString() CORS_ALLOWED_ORIGINS?: string;
   @IsOptional() @IsString() REDIS_ENABLED?: string;
   @IsOptional() @IsString() REDIS_URL?: string;
+  @IsOptional() @IsString() OPENAI_API_KEY?: string;
+  @IsOptional() @IsString() OPENAI_MODEL?: string;
   @IsOptional() @IsString() IDRIVE_ENDPOINT?: string;
   @IsOptional() @IsString() IDRIVE_REGION?: string;
   @IsOptional() @IsString() IDRIVE_ACCESS_KEY_ID?: string;
