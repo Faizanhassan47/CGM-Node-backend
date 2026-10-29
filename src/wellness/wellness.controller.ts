@@ -10,6 +10,7 @@ export class WellnessController {
   @Put('reminders') update(@CurrentUser() u: AuthUser, @Body() d: ReminderSettingsDto) { return this.service.updateReminders(u.sub, d); }
   @Post('reminder-schedules') schedule(@CurrentUser() u: AuthUser, @Body() d: MealScheduleDto) { return this.service.saveSchedule(u.sub, d); }
   @Patch('reminder-schedules/:id') editSchedule(@CurrentUser() u: AuthUser, @Param('id') id: string, @Body() d: Partial<MealScheduleDto>) { return this.service.updateSchedule(u.sub, Number(id), d); }
+  @Delete('reminder-schedules/:id') removeSchedule(@CurrentUser() u: AuthUser, @Param('id') id: string) { return this.service.deleteSchedule(u.sub, Number(id)); }
   @Get('today') today(@CurrentUser() u: AuthUser, @Query('startUtc') start?: string, @Query('endUtc') end?: string) { const e = end ? new Date(end) : new Date(); const s = start ? new Date(start) : new Date(e.getTime() - 86400000); return this.service.today(u.sub, s, e); }
   @Post('meals') meal(@CurrentUser() u: AuthUser, @Body() d: MealLogDto) { return this.service.addMeal(u.sub, d); }
   @Get('meals') meals(@CurrentUser() u: AuthUser, @Query('from') from?: string, @Query('to') to?: string, @Query('page') page?: string, @Query('pageSize') size?: string) { return this.service.listMeals(u.sub, from, to, Number(page ?? 1), Number(size ?? 50)); }
