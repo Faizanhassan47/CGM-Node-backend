@@ -18,7 +18,7 @@ export class GlucoseController {
     private readonly db: DataSource,
     private readonly gateway: GlucoseGateway,
     private readonly workers: WorkersService,
-  ) {}
+  ) { }
   private q(sql: string, params?: unknown[]) { return this.db.query(normalizeSql(sql, this.db), params); }
   private async createAlertWithRecipients(userId: number, sensorId: number, hit: { type: string; title: string; severity: string }, value: number, time: Date) {
     const runner = this.db.createQueryRunner();
@@ -141,7 +141,7 @@ export class GlucoseController {
     } finally {
       await runner.release();
     }
-    try { await this.notify(u.sub, s.id, dto.glucoseValue, measurementTime); } catch(_) {}
+    try { await this.notify(u.sub, s.id, dto.glucoseValue, measurementTime); } catch (_) { }
     return { message: 'Measurement saved successfully.', measurementTime: dto.measurementTime };
   }
 

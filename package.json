@@ -34,6 +34,7 @@
     "class-validator": "^0.14.2",
     "firebase-admin": "^14.5.0",
     "helmet": "^8.1.0",
+    "ioredis": "^5.11.1",
     "msnodesqlv8": "^5.5.0",
     "mssql": "^12.7.9",
     "multer": "^2.5.0",

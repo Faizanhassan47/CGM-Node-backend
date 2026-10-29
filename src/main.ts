@@ -128,6 +128,15 @@ async function bootstrap(): Promise<void> {
     );
   }
 
+  const [databaseIdentity] = await dataSource.query(
+    'SELECT DATABASE() AS ActiveDatabase',
+  );
+  const activeDatabase = String(databaseIdentity?.ActiveDatabase ?? '');
+  const expectedDatabase = config.get<string>('CGM_STAGING_DATABASE_NAME');
+  if (config.get<string>('CGM_STAGING_DATABASE') === 'true' && expectedDatabase && activeDatabase !== expectedDatabase) {
+    throw new Error(`Staging database mismatch: connected to ${activeDatabase}, expected ${expectedDatabase}`);
+  }
+
   // Preserve current database initialization
   // behavior until versioned migrations are
   // implemented.
@@ -158,7 +167,7 @@ async function bootstrap(): Promise<void> {
   logger.log('AIMA CGM Backend Started Successfully');
   logger.log(`Environment: ${isProduction ? 'Production' : 'Development'}`);
   logger.log(`Port: ${port}`);
-  logger.log('Database: Connected');
+  logger.log(`Database: Connected (${activeDatabase})`);
   logger.log(`Swagger: ${swaggerEnabled ? 'Enabled' : 'Disabled'}`);
   logger.log('========================================');
 }

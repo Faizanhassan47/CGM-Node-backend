@@ -6,6 +6,59 @@ import { randomUUID } from "crypto";
 import { DataSource, QueryRunner } from "typeorm";
 import { normalizeSql } from "../common/sql-helper";
 import { FirebaseAdminService } from "../firebase/firebase-admin.service";
+
+const MAX_SUMMARY_GAP_MINUTES = 5;
+
+type SummaryReading = { value: number; measuredAtMs: number };
+
+function measurementTimeMs(value: unknown): number | null {
+  if (value instanceof Date) {
+    const time = value.getTime();
+    return Number.isFinite(time) ? time : null;
+  }
+  const text = String(value ?? '').trim();
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?/);
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second, fraction = ''] = match;
+  const milliseconds = Number(fraction.slice(0, 3).padEnd(3, '0'));
+  return Date.UTC(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+    Number(second),
+    milliseconds,
+  );
+}
+
+function summaryDurations(readings: SummaryReading[]) {
+  let inRangeMinutes = 0;
+  let belowRangeMinutes = 0;
+  let aboveRangeMinutes = 0;
+
+  for (let index = 0; index < readings.length - 1; index += 1) {
+    const gapMinutes = Math.max(
+      0,
+      Math.min(
+        MAX_SUMMARY_GAP_MINUTES,
+        (readings[index + 1].measuredAtMs - readings[index].measuredAtMs) / 60000,
+      ),
+    );
+    if (readings[index].value < 70) belowRangeMinutes += gapMinutes;
+    else if (readings[index].value > 180) aboveRangeMinutes += gapMinutes;
+    else inRangeMinutes += gapMinutes;
+  }
+
+  const coveredMinutes = inRangeMinutes + belowRangeMinutes + aboveRangeMinutes;
+  return {
+    inRangeMinutes: Math.round(inRangeMinutes),
+    belowRangeMinutes: Math.round(belowRangeMinutes),
+    aboveRangeMinutes: Math.round(aboveRangeMinutes),
+    coveredMinutes,
+  };
+}
+
 @Injectable()
 export class WorkersService {
   private log = new Logger(WorkersService.name);
@@ -16,6 +69,9 @@ export class WorkersService {
   ) {}
   private q(sql: string, params?: unknown[]) {
     return this.db.query(normalizeSql(sql, this.db), params);
+  }
+  private scheduledWorkersEnabled(): boolean {
+    return this.config.get<string>('RUN_SCHEDULED_WORKERS') !== 'false';
   }
   private summaryDate(value: unknown): string {
     if (value instanceof Date) {
@@ -45,6 +101,7 @@ export class WorkersService {
     );
   }
   @Interval(10_000) async dailySummaryJobs() {
+    if (!this.scheduledWorkersEnabled()) return;
     try {
       const jobs = await this.q('SELECT Id,UserId,SummaryDate,RetryCount,RequestedVersion FROM DailySummaryJobs WHERE (Status IN ("Pending","Failed") AND RetryCount<3 AND (NextAttemptAt IS NULL OR NextAttemptAt<=UTC_TIMESTAMP())) OR (Status="Processing" AND LeaseExpiresAt<UTC_TIMESTAMP()) ORDER BY CreatedAt LIMIT 25');
       for (const job of jobs) {
@@ -66,6 +123,7 @@ export class WorkersService {
     }
   }
   @Interval(10_000) async notifications() {
+    if (!this.scheduledWorkersEnabled()) return;
     try {
       const items = await this.q(
         'SELECT q.Id QueueId,q.AlertId,q.RetryCount,a.Title,a.Message,a.UserId FROM AlertQueue q JOIN Alerts a ON a.Id=q.AlertId WHERE q.Status IN ("Pending","Failed") AND q.RetryCount<3 AND (q.NextAttemptAt IS NULL OR q.NextAttemptAt<=UTC_TIMESTAMP()) ORDER BY q.CreatedAt LIMIT 25',
@@ -224,6 +282,7 @@ export class WorkersService {
   }
   @Cron("5 0 * * *") // Runs every day at 00:05 (5 minutes after 12:00 AM midnight)
   async summaries() {
+    if (!this.scheduledWorkersEnabled()) return;
     const yesterday = new Date(Date.now() - 86400000)
       .toISOString()
       .slice(0, 10);
@@ -256,12 +315,19 @@ export class WorkersService {
   public async computeAndSaveDailySummary(userId: number, dateStr: string) {
     try {
       const rows = await this.q(
-        "SELECT GlucoseValue FROM GlucoseMeasurements WHERE UserId=? AND CAST(MeasurementTime AS DATE)=CAST(? AS DATE) AND GlucoseValue IS NOT NULL ORDER BY MeasurementTime",
+        "SELECT GlucoseValue,MeasurementTime FROM GlucoseMeasurements WHERE UserId=? AND CAST(MeasurementTime AS DATE)=CAST(? AS DATE) AND GlucoseValue IS NOT NULL ORDER BY MeasurementTime",
         [userId, dateStr],
       );
-      const v = rows
-        .map((x: Record<string, unknown>) => Number(x.GlucoseValue))
-        .filter((n: number) => !isNaN(n) && n > 0);
+      const readings: SummaryReading[] = rows
+        .map((x: Record<string, unknown>) => ({
+          value: Number(x.GlucoseValue),
+          measuredAtMs: measurementTimeMs(x.MeasurementTime),
+        }))
+        .filter(
+          (reading: { value: number; measuredAtMs: number | null }): reading is SummaryReading =>
+            Number.isFinite(reading.value) && reading.value > 0 && reading.measuredAtMs !== null,
+        );
+      const v = readings.map((reading) => reading.value);
       if (!v.length) return;
 
       const mean = v.reduce((a: number, b: number) => a + b, 0) / v.length;
@@ -279,7 +345,8 @@ export class WorkersService {
           : 0;
       const low = v.filter((x: number) => x < 70).length;
       const high = v.filter((x: number) => x > 180).length;
-      const inside = v.length - low - high;
+      const durations = summaryDurations(readings);
+      const coveredMinutes = durations.coveredMinutes;
 
       let highEvents = 0,
         lowEvents = 0,
@@ -306,12 +373,12 @@ export class WorkersService {
             sd,
             3.31 + 0.02392 * mean,
             mean ? (sd / mean) * 100 : 0,
-            inside * 4,
-            low * 4,
-            high * 4,
-            (inside / v.length) * 100,
-            (low / v.length) * 100,
-            (high / v.length) * 100,
+            durations.inRangeMinutes,
+            durations.belowRangeMinutes,
+            durations.aboveRangeMinutes,
+            coveredMinutes ? (durations.inRangeMinutes / coveredMinutes) * 100 : 0,
+            coveredMinutes ? (durations.belowRangeMinutes / coveredMinutes) * 100 : 0,
+            coveredMinutes ? (durations.aboveRangeMinutes / coveredMinutes) * 100 : 0,
             Math.min(...v),
             Math.max(...v),
             highEvents,
@@ -331,12 +398,12 @@ export class WorkersService {
             sd,
             3.31 + 0.02392 * mean,
             mean ? (sd / mean) * 100 : 0,
-            inside * 4,
-            low * 4,
-            high * 4,
-            (inside / v.length) * 100,
-            (low / v.length) * 100,
-            (high / v.length) * 100,
+            durations.inRangeMinutes,
+            durations.belowRangeMinutes,
+            durations.aboveRangeMinutes,
+            coveredMinutes ? (durations.inRangeMinutes / coveredMinutes) * 100 : 0,
+            coveredMinutes ? (durations.belowRangeMinutes / coveredMinutes) * 100 : 0,
+            coveredMinutes ? (durations.aboveRangeMinutes / coveredMinutes) * 100 : 0,
             Math.min(...v),
             Math.max(...v),
             highEvents,
@@ -358,6 +425,7 @@ export class WorkersService {
 
   @Cron(CronExpression.EVERY_MINUTE)
   async operations() {
+    if (!this.scheduledWorkersEnabled()) return;
     await this.q(
       'UPDATE AlertQueue SET Status="Pending",ProcessingStartedAt=NULL,LeaseExpiresAt=NULL,LeaseOwner=NULL,NextAttemptAt=UTC_TIMESTAMP(),ErrorMessage="Recovered expired processing lease" WHERE Status="Processing" AND LeaseExpiresAt IS NOT NULL AND LeaseExpiresAt<UTC_TIMESTAMP()',
     );
