@@ -1,12 +1,10 @@
 
-import { createServer } from 'http';
+import { createServer, IncomingMessage, ServerResponse } from 'http';
 
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
-import { ExpressAdapter } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import express from 'express';
 import helmet from 'helmet';
 import { DataSource } from 'typeorm';
 
@@ -14,8 +12,15 @@ import { AppModule } from './app.module';
 import { ensureTablesExist } from './database/schema-initializer';
 
 const listenPort = Number(process.env.PORT ?? process.env.API_PORT ?? '5232');
-const expressApp = express();
-const httpServer = createServer(expressApp);
+let nestHandler: ((req: IncomingMessage, res: ServerResponse) => void) | undefined;
+const httpServer = createServer((req, res) => {
+  if (nestHandler) {
+    nestHandler(req, res);
+    return;
+  }
+  res.statusCode = 503;
+  res.end('Starting');
+});
 if (process.env.WORKER_ONLY !== 'true' && Number.isInteger(listenPort) && listenPort >= 1 && listenPort <= 65535) {
   httpServer.listen(listenPort, '0.0.0.0');
 }
@@ -31,7 +36,7 @@ async function bootstrap(): Promise<void> {
     return;
   }
 
-  const app = await NestFactory.create(AppModule, new ExpressAdapter(expressApp), {
+  const app = await NestFactory.create(AppModule, {
     bufferLogs: true,
   });
 
@@ -157,6 +162,7 @@ async function bootstrap(): Promise<void> {
     throw new Error('Invalid PORT or API_PORT configuration');
   }
 
+  nestHandler = app.getHttpAdapter().getInstance();
   await app.init();
 
   const [databaseIdentity] = await dataSource.query(
