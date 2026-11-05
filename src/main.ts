@@ -136,6 +136,20 @@ async function bootstrap(): Promise<void> {
     );
   }
 
+  // Hostinger assigns PORT and requires listen() within a few seconds.
+  // Schema checks run after the port is open.
+  const port = Number(process.env.PORT ?? config.get<string>('API_PORT') ?? '5232');
+
+  if (
+    !Number.isInteger(port) ||
+    port < 1 ||
+    port > 65535
+  ) {
+    throw new Error('Invalid PORT or API_PORT configuration');
+  }
+
+  await app.listen(port, '0.0.0.0');
+
   const [databaseIdentity] = await dataSource.query(
     'SELECT DATABASE() AS ActiveDatabase',
   );
@@ -145,32 +159,10 @@ async function bootstrap(): Promise<void> {
     throw new Error(`Staging database mismatch: connected to ${activeDatabase}, expected ${expectedDatabase}`);
   }
 
-  // Preserve current database initialization
-  // behavior until versioned migrations are
-  // implemented.
   await ensureTablesExist(dataSource);
 
   logger.log('Database initialization completed');
 
-  // --------------------------------------------
-  // 8. Server startup
-  // --------------------------------------------
-  const port =
-    Number(config.get<string>('API_PORT') ?? '5232');
-
-  if (
-    !Number.isInteger(port) ||
-    port < 1 ||
-    port > 65535
-  ) {
-    throw new Error('Invalid API_PORT configuration');
-  }
-
-  await app.listen(port, '0.0.0.0');
-
-  // --------------------------------------------
-  // 9. Production logging
-  // --------------------------------------------
   logger.log('========================================');
   logger.log('AIMA CGM Backend Started Successfully');
   logger.log(`Environment: ${isProduction ? 'Production' : 'Development'}`);
