@@ -1,13 +1,24 @@
 
+import { createServer } from 'http';
+
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
+import { ExpressAdapter } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import express from 'express';
 import helmet from 'helmet';
 import { DataSource } from 'typeorm';
 
 import { AppModule } from './app.module';
 import { ensureTablesExist } from './database/schema-initializer';
+
+const listenPort = Number(process.env.PORT ?? process.env.API_PORT ?? '5232');
+const expressApp = express();
+const httpServer = createServer(expressApp);
+if (process.env.WORKER_ONLY !== 'true' && Number.isInteger(listenPort) && listenPort >= 1 && listenPort <= 65535) {
+  httpServer.listen(listenPort, '0.0.0.0');
+}
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
@@ -20,7 +31,7 @@ async function bootstrap(): Promise<void> {
     return;
   }
 
-  const app = await NestFactory.create(AppModule, {
+  const app = await NestFactory.create(AppModule, new ExpressAdapter(expressApp), {
     bufferLogs: true,
   });
 
@@ -136,9 +147,7 @@ async function bootstrap(): Promise<void> {
     );
   }
 
-  // Hostinger assigns PORT and requires listen() within a few seconds.
-  // Schema checks run after the port is open.
-  const port = Number(process.env.PORT ?? config.get<string>('API_PORT') ?? '5232');
+  const port = listenPort;
 
   if (
     !Number.isInteger(port) ||
@@ -148,7 +157,7 @@ async function bootstrap(): Promise<void> {
     throw new Error('Invalid PORT or API_PORT configuration');
   }
 
-  await app.listen(port, '0.0.0.0');
+  await app.init();
 
   const [databaseIdentity] = await dataSource.query(
     'SELECT DATABASE() AS ActiveDatabase',
