@@ -47,6 +47,19 @@ export class MealLog {
   @Column({ name: 'UpdatedAt', type: 'datetime', nullable: true }) updatedAt!: Date | null;
 }
 
+@Entity('DailyActivityLogs')
+@Unique('uq_activity_logs_client_event', ['userId', 'clientEventId'])
+export class DailyActivityLog {
+  @PrimaryGeneratedColumn({ name: 'Id' }) id!: number;
+  @Column({ name: 'UserId' }) userId!: number;
+  @Column({ name: 'EventType', length: 20 }) eventType!: string;
+  @Column({ name: 'PayloadJson', type: 'text' }) payloadJson!: string;
+  @Column({ name: 'OccurredAtUtc', type: 'datetime' }) occurredAtUtc!: Date;
+  @Column({ name: 'ClientEventId', length: 100 }) clientEventId!: string;
+  @Column({ name: 'DeletedAt', type: 'datetime', nullable: true }) deletedAt!: Date | null;
+  @Column({ name: 'CreatedAt', type: 'datetime' }) createdAt!: Date;
+}
+
 @Entity('WaterIntakeLogs')
 @Unique('uq_water_logs_client_event', ['userId', 'clientEventId'])
 export class WaterIntakeLog {

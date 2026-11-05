@@ -238,6 +238,120 @@ export class AdminController {
     );
   }
 
+  @Get("users/:id/record")
+  async userRecord(@CurrentUser() u: AuthUser, @Param("id") id: string) {
+    this.checkAdmin(u);
+    const userId = Number(id);
+    if (!Number.isInteger(userId) || userId <= 0) {
+      throw new NotFoundException("User not found.");
+    }
+    const users = await this.q(
+      "SELECT Id,FullName,Email,AuthProvider,EmailVerified,IsActive,ProfilePictureUrl,ReferralCode,CreatedAt FROM Users WHERE Id=?",
+      [userId],
+    );
+    if (!users.length) throw new NotFoundException("User not found.");
+    const safe = async (sql: string, params: unknown[] = [userId]) => {
+      try {
+        return await this.q(sql, params);
+      } catch {
+        return [];
+      }
+    };
+    const [
+      profiles,
+      devices,
+      sensors,
+      latest,
+      history,
+      summaryRows,
+      daily,
+      alerts,
+      rules,
+      families,
+      members,
+      meals,
+      water,
+      hardware,
+    ] = await Promise.all([
+      safe("SELECT * FROM PatientProfile WHERE UserId=?", [userId]),
+      safe(
+        "SELECT Id,DeviceName,DeviceType,DeviceModel,SerialNumber,BleDeviceName,FirmwareVersion,BatteryPercentage,ConnectionStatus,LastConnectedAt,IsActive,CreatedAt FROM CGMDevices WHERE UserId=? ORDER BY CreatedAt DESC",
+        [userId],
+      ),
+      safe(
+        "SELECT Id,DeviceId,SensorIdentifier,Status,StartedAt,ActivatedAt,ExpiresAt,EndedAt,LastReadingAt,IsActive FROM Sensors WHERE UserId=? ORDER BY Id DESC",
+        [userId],
+      ),
+      safe(
+        "SELECT SensorId,MeasurementTime,GlucoseValue,SequenceNumber,DeviceTemperatureC,BatteryVoltageMv FROM GlucoseMeasurements WHERE UserId=? ORDER BY MeasurementTime DESC LIMIT 1",
+        [userId],
+      ),
+      safe(
+        "SELECT SensorId,MeasurementTime,GlucoseValue,SequenceNumber FROM GlucoseMeasurements WHERE UserId=? ORDER BY MeasurementTime DESC LIMIT 200",
+        [userId],
+      ),
+      safe(
+        "SELECT COUNT(*) ReadingCount, AVG(GlucoseValue) MeanGlucose, MIN(GlucoseValue) MinGlucose, MAX(GlucoseValue) MaxGlucose FROM GlucoseMeasurements WHERE UserId=? AND GlucoseValue IS NOT NULL",
+        [userId],
+      ),
+      safe(
+        "SELECT SummaryDate,ReadingCount,MeanGlucose,TimeInRangePercentage,Gmi,CvPercentage FROM DailyGlucoseSummaries WHERE UserId=? ORDER BY SummaryDate DESC LIMIT 30",
+        [userId],
+      ),
+      safe(
+        "SELECT Id,AlertType,Title,Message,GlucoseValue,GlucoseUnit,Severity,IsRead,AlertTime FROM Alerts WHERE UserId=? ORDER BY AlertTime DESC LIMIT 50",
+        [userId],
+      ),
+      safe(
+        "SELECT Id,AlertType,MinimumValue,MaximumValue,DurationMinutes,Enabled FROM AlertRules WHERE UserId=? ORDER BY AlertType",
+        [userId],
+      ),
+      safe(
+        "SELECT Id,OwnerUserId,IsActive,LowGlucoseThreshold,HighGlucoseThreshold,CreatedAt FROM Families WHERE OwnerUserId=? OR Id IN (SELECT FamilyId FROM FamilyMembers WHERE UserId=? AND Status=\"Active\")",
+        [userId, userId],
+      ),
+      safe(
+        "SELECT fm.Id,fm.UserId,fm.Role,fm.Status,fm.ReceiveAlerts,u.FullName,u.Email FROM FamilyMembers fm JOIN Users u ON u.Id=fm.UserId WHERE fm.FamilyId IN (SELECT Id FROM Families WHERE OwnerUserId=? UNION SELECT FamilyId FROM FamilyMembers WHERE UserId=?)",
+        [userId, userId],
+      ),
+      safe(
+        "SELECT Id,MealType,FoodDescription,OccurredAtUtc FROM MealLogs WHERE UserId=? AND DeletedAt IS NULL ORDER BY OccurredAtUtc DESC LIMIT 50",
+        [userId],
+      ),
+      safe(
+        "SELECT Id,AmountMl,OccurredAtUtc FROM WaterIntakeLogs WHERE UserId=? AND DeletedAt IS NULL ORDER BY OccurredAtUtc DESC LIMIT 50",
+        [userId],
+      ),
+      safe(
+        "SELECT DeviceModel,OsVersion,BluetoothMacAddress,LoggedAt FROM PhoneHardwareLogs WHERE UserId=? ORDER BY LoggedAt DESC LIMIT 10",
+        [userId],
+      ),
+    ]);
+    const summary = summaryRows[0] || {};
+    return {
+      user: users[0],
+      profile: profiles[0] || null,
+      devices,
+      sensors,
+      latest: latest[0] || null,
+      history,
+      summary: {
+        ReadingCount: Number(summary.ReadingCount ?? 0),
+        MeanGlucose: summary.MeanGlucose == null ? null : Number(summary.MeanGlucose),
+        MinGlucose: summary.MinGlucose == null ? null : Number(summary.MinGlucose),
+        MaxGlucose: summary.MaxGlucose == null ? null : Number(summary.MaxGlucose),
+      },
+      dailySummaries: daily,
+      alerts,
+      alertRules: rules,
+      family: families[0] || null,
+      members,
+      meals,
+      water,
+      hardware,
+    };
+  }
+
   @Post("users/:id/disable")
   async disable(@CurrentUser() u: AuthUser, @Param("id") id: string) {
     this.checkAdmin(u);

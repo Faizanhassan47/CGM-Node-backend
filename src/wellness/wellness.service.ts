@@ -1,13 +1,28 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Between, IsNull, MoreThanOrEqual, Repository } from 'typeorm';
+import { Between, DataSource, IsNull, MoreThanOrEqual, Repository } from 'typeorm';
 import { GlucoseMeasurement } from '../database/entities';
-import { MealLog, MealReminderSchedule, WaterIntakeLog, WellnessReminderSettings } from './wellness.entities';
-import { MealLogDto, MealScheduleDto, ReminderSettingsDto, WaterLogDto } from './wellness.dto';
+import { DailyActivityLog, MealLog, MealReminderSchedule, WaterIntakeLog, WellnessReminderSettings } from './wellness.entities';
+import { ActivityLogDto, MealLogDto, MealScheduleDto, ReminderSettingsDto, WaterLogDto } from './wellness.dto';
 
 @Injectable()
-export class WellnessService {
-  constructor(@InjectRepository(WellnessReminderSettings) private settings: Repository<WellnessReminderSettings>, @InjectRepository(MealReminderSchedule) private schedules: Repository<MealReminderSchedule>, @InjectRepository(MealLog) private meals: Repository<MealLog>, @InjectRepository(WaterIntakeLog) private water: Repository<WaterIntakeLog>, @InjectRepository(GlucoseMeasurement) private glucose: Repository<GlucoseMeasurement>) {}
+export class WellnessService implements OnModuleInit {
+  constructor(@InjectRepository(WellnessReminderSettings) private settings: Repository<WellnessReminderSettings>, @InjectRepository(MealReminderSchedule) private schedules: Repository<MealReminderSchedule>, @InjectRepository(MealLog) private meals: Repository<MealLog>, @InjectRepository(WaterIntakeLog) private water: Repository<WaterIntakeLog>, @InjectRepository(DailyActivityLog) private activities: Repository<DailyActivityLog>, @InjectRepository(GlucoseMeasurement) private glucose: Repository<GlucoseMeasurement>, private dataSource: DataSource) {}
+  async onModuleInit() {
+    if (this.dataSource.options.type !== 'mysql') return;
+    await this.dataSource.query(`CREATE TABLE IF NOT EXISTS DailyActivityLogs (
+      Id INT AUTO_INCREMENT PRIMARY KEY,
+      UserId INT NOT NULL,
+      EventType VARCHAR(20) NOT NULL,
+      PayloadJson TEXT NOT NULL,
+      OccurredAtUtc DATETIME NOT NULL,
+      ClientEventId VARCHAR(100) NOT NULL,
+      DeletedAt DATETIME NULL,
+      CreatedAt DATETIME NOT NULL,
+      UNIQUE KEY uq_activity_logs_client_event (UserId, ClientEventId),
+      KEY ix_activity_logs_user_time (UserId, OccurredAtUtc)
+    )`);
+  }
   async reminders(userId: number) { let s = await this.settings.findOneBy({ userId }); if (!s) { s = await this.settings.save(this.settings.create({ userId, createdAt: new Date() })); } let schedules = await this.schedules.findBy({ userId, enabled: true }); if (!schedules.length) { schedules = await this.schedules.save(['Breakfast|08:00','Lunch|13:00','Dinner|19:30'].map(x => { const [mealType, reminderTime] = x.split('|'); return this.schedules.create({ userId, mealType, reminderTime, daysOfWeek: '0,1,2,3,4,5,6', enabled: true, createdAt: new Date() }); })); } return { settings: s, schedules }; }
   async updateReminders(userId: number, dto: ReminderSettingsDto) { let s = await this.settings.findOneBy({ userId }); if (!s) s = this.settings.create({ userId, createdAt: new Date() }); Object.assign(s, dto, { updatedAt: new Date() }); const saved = await this.settings.save(s); return { settings: saved, schedules: await this.schedules.findBy({ userId, enabled: true }) }; }
   async saveSchedule(userId: number, dto: MealScheduleDto) { const row = this.schedules.create({ ...dto, userId, createdAt: new Date() }); return this.schedules.save(row); }
@@ -21,5 +36,76 @@ export class WellnessService {
   async addWater(userId: number, dto: WaterLogDto) { const existing = await this.water.findOneBy({ userId, clientEventId: dto.clientEventId }); if (existing) return existing; return this.water.save(this.water.create({ ...dto, userId, occurredAtUtc: new Date(dto.occurredAtUtc), createdAt: new Date() })); }
   async listWater(userId: number, from?: string, to?: string) { return this.water.find({ where: { userId, deletedAt: IsNull(), ...(from && to ? { occurredAtUtc: Between(new Date(from), new Date(to)) } : {}) }, order: { occurredAtUtc: 'DESC' } }); }
   async deleteWater(userId: number, id: number) { const row = await this.water.findOneBy({ id, userId, deletedAt: IsNull() }); if (!row) throw new NotFoundException('Water entry not found.'); row.deletedAt = new Date(); await this.water.save(row); }
+  async listActivities(userId: number, from?: string, to?: string) {
+    const rows = await this.activities.find({ where: { userId, deletedAt: IsNull(), ...(from && to ? { occurredAtUtc: Between(new Date(from), new Date(to)) } : {}) }, order: { occurredAtUtc: 'DESC' } });
+    return rows.map((row) => this.presentActivity(row));
+  }
+  async addActivity(userId: number, dto: ActivityLogDto) {
+    const existing = await this.activities.findOneBy({ userId, clientEventId: dto.clientEventId });
+    if (existing) return this.presentActivity(existing);
+    const payload = this.normalizeActivity(dto.eventType, dto.payload);
+    const row = await this.activities.save(this.activities.create({ userId, eventType: dto.eventType, payloadJson: JSON.stringify(payload), occurredAtUtc: new Date(dto.occurredAtUtc), clientEventId: dto.clientEventId, createdAt: new Date() }));
+    return this.presentActivity(row);
+  }
+  async deleteActivity(userId: number, id: number) {
+    const row = await this.activities.findOneBy({ id, userId, deletedAt: IsNull() });
+    if (!row) throw new NotFoundException('Activity not found.');
+    row.deletedAt = new Date();
+    await this.activities.save(row);
+  }
+  private presentActivity(row: DailyActivityLog) {
+    let payload: Record<string, unknown> = {};
+    try { payload = JSON.parse(row.payloadJson); } catch { payload = {}; }
+    return { id: row.id, userId: row.userId, eventType: row.eventType, payload, occurredAtUtc: row.occurredAtUtc, clientEventId: row.clientEventId, createdAt: row.createdAt };
+  }
+  private normalizeActivity(eventType: ActivityLogDto['eventType'], raw: Record<string, unknown>) {
+    const text = (key: string, max = 200) => {
+      const value = raw[key];
+      if (typeof value !== 'string' || !value.trim()) return '';
+      return value.trim().slice(0, max);
+    };
+    const num = (key: string) => {
+      const value = raw[key];
+      const n = typeof value === 'number' ? value : Number(value);
+      return Number.isFinite(n) ? n : null;
+    };
+    if (eventType === 'meal') {
+      const mealType = text('mealType', 40).toLowerCase();
+      if (!['breakfast', 'lunch', 'dinner', 'snack'].includes(mealType)) throw new BadRequestException('Choose breakfast, lunch, dinner, or snack.');
+      const foodItems = text('foodItems', 2000);
+      if (!foodItems) throw new BadRequestException('Add the food items.');
+      const carbs = num('carbohydratesGrams');
+      if (carbs != null && (carbs < 0 || carbs > 1000)) throw new BadRequestException('Carbohydrates must be between 0 and 1000 g.');
+      return { mealType, foodItems, carbohydratesGrams: carbs };
+    }
+    if (eventType === 'insulin') {
+      const name = text('name', 80);
+      const insulinType = text('insulinType', 40);
+      const doseUnits = num('doseUnits');
+      if (!name || !insulinType) throw new BadRequestException('Insulin name and type are required.');
+      if (doseUnits == null || doseUnits <= 0 || doseUnits > 200) throw new BadRequestException('Dose must be between 0 and 200 units.');
+      const concentration = num('concentrationUPerMl');
+      const result: Record<string, unknown> = { name, insulinType, doseUnits };
+      if (concentration != null && concentration > 0) {
+        result.concentrationUPerMl = concentration;
+        result.volumeMl = Math.round((doseUnits / concentration) * 1000) / 1000;
+      }
+      return result;
+    }
+    if (eventType === 'exercise') {
+      const activity = text('activity', 40).toLowerCase();
+      if (!['walking', 'running', 'cycling', 'gym'].includes(activity)) throw new BadRequestException('Choose walking, running, cycling, or gym.');
+      const durationMinutes = num('durationMinutes');
+      const intensity = text('intensity', 20).toLowerCase();
+      if (durationMinutes == null || durationMinutes <= 0 || durationMinutes > 1440) throw new BadRequestException('Duration must be between 1 and 1440 minutes.');
+      if (!['low', 'moderate', 'high'].includes(intensity)) throw new BadRequestException('Choose low, moderate, or high intensity.');
+      return { activity, durationMinutes, intensity };
+    }
+    const category = text('category', 40).toLowerCase();
+    if (!['medication', 'sleep', 'stress', 'illness', 'note'].includes(category)) throw new BadRequestException('Choose medication, sleep, stress, illness, or a note.');
+    const notes = text('notes', 2000);
+    if (!notes) throw new BadRequestException('Add a note for this activity.');
+    return { category, notes };
+  }
   async mealGlucose(userId: number, id: number) { const meal = await this.meals.findOneBy({ id, userId, deletedAt: IsNull() }); if (!meal) throw new NotFoundException('Meal not found.'); const from = new Date(meal.occurredAtUtc.getTime() - 30 * 60000); const to = new Date(meal.occurredAtUtc.getTime() + 180 * 60000); const readings = await this.glucose.find({ where: { userId, measurementTime: Between(from, to) }, order: { measurementTime: 'ASC' } }); if (!readings.length) return { meal, readings: [], analysis: null, message: 'Not enough glucose data to analyze this meal.' }; const values = readings.map(r => Number(r.glucoseValue)).filter(Number.isFinite); const baseline = values[0]; const peak = Math.max(...values); return { meal, readings, analysis: { baseline, peak, delta: peak - baseline, from, to } }; }
 }

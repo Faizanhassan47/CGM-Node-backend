@@ -1,6 +1,6 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query } from '@nestjs/common';
 import { AuthUser, CurrentUser } from '../common/auth-user';
-import { MealLogDto, MealScheduleDto, ReminderSettingsDto, WaterLogDto } from './wellness.dto';
+import { ActivityLogDto, MealLogDto, MealScheduleDto, ReminderSettingsDto, WaterLogDto } from './wellness.dto';
 import { WellnessService } from './wellness.service';
 
 @Controller('api/wellness')
@@ -20,4 +20,7 @@ export class WellnessController {
   @Post('water') addWater(@CurrentUser() u: AuthUser, @Body() d: WaterLogDto) { return this.service.addWater(u.sub, d); }
   @Get('water') water(@CurrentUser() u: AuthUser, @Query('from') from?: string, @Query('to') to?: string) { return this.service.listWater(u.sub, from, to); }
   @Delete('water/:id') removeWater(@CurrentUser() u: AuthUser, @Param('id') id: string) { return this.service.deleteWater(u.sub, Number(id)); }
+  @Get('activities') activities(@CurrentUser() u: AuthUser, @Query('from') from?: string, @Query('to') to?: string) { return this.service.listActivities(u.sub, from, to); }
+  @Post('activities') activity(@CurrentUser() u: AuthUser, @Body() d: ActivityLogDto) { return this.service.addActivity(u.sub, d); }
+  @Delete('activities/:id') removeActivity(@CurrentUser() u: AuthUser, @Param('id') id: string) { return this.service.deleteActivity(u.sub, Number(id)); }
 }
