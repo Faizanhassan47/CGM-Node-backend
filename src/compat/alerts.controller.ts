@@ -9,6 +9,9 @@ export class AlertsController {
   constructor(private db: DataSource) {}
   private q(sql: string, params?: unknown[]) { return this.db.query(normalizeSql(sql, this.db), params); }
   @Get() async list(@CurrentUser() u: AuthUser, @Query('severity') severity?: string, @Query('unreadOnly') unread?: string) {
+    if (this.db.options.type === 'mysql') {
+      await this.q(`CREATE TABLE IF NOT EXISTS UserAlertClears (UserId INT PRIMARY KEY, ClearedAt DATETIME NOT NULL)`);
+    }
     // Alerts created for the patient may not have an AlertRecipients row
     // (for example legacy rows or family notifications). Include those rows
     // while keeping all activity scoped to the authenticated user.
@@ -21,26 +24,30 @@ export class AlertsController {
       LEFT JOIN AlertRecipients r ON a.Id=r.AlertId AND r.UserId=?
       WHERE (a.UserId=? OR r.UserId IS NOT NULL)
       ${severity ? 'AND a.Severity=?' : ''}
-      UNION ALL
-      SELECT CONCAT('meal:', m.Id) id, 2 category,
-        CONCAT('Meal logged: ', m.MealType) title,
-        m.FoodDescription message, m.OccurredAtUtc timestamp, NULL glucoseValue,
-        0 unit, 1 isRead, 0 isCritical, m.UserId patientUserId, 'Wellness' severity
-      FROM MealLogs m
-      WHERE m.UserId=? AND m.DeletedAt IS NULL
-      UNION ALL
-      SELECT CONCAT('water:', w.Id) id, 3 category,
-        'Water intake logged' title,
-        CONCAT(CAST(w.AmountMl AS CHAR), ' ml') message, w.OccurredAtUtc timestamp, NULL glucoseValue,
-        0 unit, 1 isRead, 0 isCritical, w.UserId patientUserId, 'Wellness' severity
-      FROM WaterIntakeLogs w
-      WHERE w.UserId=? AND w.DeletedAt IS NULL
     ) activity`;
     const args: unknown[] = [u.sub, u.sub];
     if (severity) args.push(severity);
-    args.push(u.sub, u.sub);
-    if (unread === 'true') sql += ' WHERE isRead=0';
+    if (unread === 'true') sql += ' WHERE isRead=0 AND timestamp > COALESCE((SELECT ClearedAt FROM UserAlertClears WHERE UserId=?), \'1970-01-01\')';
+    else sql += ' WHERE timestamp > COALESCE((SELECT ClearedAt FROM UserAlertClears WHERE UserId=?), \'1970-01-01\')';
+    args.push(u.sub);
     return this.q(`${sql} ORDER BY timestamp DESC LIMIT 50`, args);
+  }
+  @Delete('history') async clearHistory(@CurrentUser() u: AuthUser) {
+    if (this.db.options.type === 'mysql') {
+      await this.q(`CREATE TABLE IF NOT EXISTS UserAlertClears (
+        UserId INT PRIMARY KEY,
+        ClearedAt DATETIME NOT NULL
+      )`);
+      await this.q('INSERT INTO UserAlertClears (UserId, ClearedAt) VALUES (?, UTC_TIMESTAMP()) ON DUPLICATE KEY UPDATE ClearedAt=UTC_TIMESTAMP()', [u.sub]);
+    } else {
+      await this.q(`IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'UserAlertClears')
+        CREATE TABLE UserAlertClears (UserId INT PRIMARY KEY, ClearedAt DATETIME NOT NULL)`);
+      await this.q(`MERGE UserAlertClears AS target
+        USING (SELECT ? AS UserId) AS source ON target.UserId = source.UserId
+        WHEN MATCHED THEN UPDATE SET ClearedAt = GETUTCDATE()
+        WHEN NOT MATCHED THEN INSERT (UserId, ClearedAt) VALUES (source.UserId, GETUTCDATE());`, [u.sub]);
+    }
+    return { message: 'Alert history cleared.' };
   }
   @Put(':id/read') async read(@CurrentUser() u: AuthUser, @Param('id') id: string) { const result = await this.q('UPDATE AlertRecipients SET IsRead=1,ReadAt=UTC_TIMESTAMP() WHERE AlertId=? AND UserId=?', [id, u.sub]); if (!result.affectedRows && !result.rowsAffected?.[0]) throw new NotFoundException(); return { message: 'Alert marked as read.' }; }
 }
