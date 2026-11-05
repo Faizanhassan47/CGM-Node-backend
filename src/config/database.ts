@@ -21,7 +21,7 @@ export function databaseConfig(connectionString: string): TypeOrmModuleOptions {
     password: c.password ?? c.pwd,
     database: c.database ?? c['initial catalog'],
     autoLoadEntities: true,
-    synchronize: isMssql,
+    synchronize: false,
     logging: false,
     timezone: 'Z',
     retryAttempts: 3,
@@ -31,7 +31,7 @@ export function databaseConfig(connectionString: string): TypeOrmModuleOptions {
           enableKeepAlive: true,
           keepAliveInitialDelay: 10000,
           waitForConnections: true,
-          connectionLimit: 10,
+          connectionLimit: 20,
           ...(sslMode && sslMode !== 'none' && sslMode !== 'disabled'
               ? { ssl: { rejectUnauthorized: sslMode === 'verifyca' || sslMode === 'verifyfull' } }
               : {}),

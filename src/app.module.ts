@@ -19,6 +19,7 @@ import { FamilyModule } from './family/family.module';
 import { WorkersModule } from './workers/workers.module';
 import { WellnessModule } from './wellness/wellness.module';
 import { ApiMetricsInterceptor } from './common/interceptors/api-metrics.interceptor';
+import { ApiQueueInterceptor } from './redis/api-queue.interceptor';
 import { RedisModule } from './redis/redis.module';
 
 const selectedEnvFile = process.env.DOTENV_CONFIG_PATH;
@@ -100,6 +101,10 @@ const selectedEnvFile = process.env.DOTENV_CONFIG_PATH;
     },
 
     // Low-overhead request timing; never logs request bodies or credentials.
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: ApiQueueInterceptor,
+    },
     {
       provide: APP_INTERCEPTOR,
       useClass: ApiMetricsInterceptor,

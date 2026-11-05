@@ -1,6 +1,6 @@
 import { BadRequestException, Body, Controller, Get, Logger, NotFoundException, Post, Query } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Between, DataSource, FindOptionsWhere, MoreThanOrEqual, Repository } from 'typeorm';
+import { Between, DataSource, FindOptionsWhere, MoreThanOrEqual, Not, Repository } from 'typeorm';
 import { AuthUser, CurrentUser } from '../common/auth-user';
 import { GlucoseMeasurement, Sensor } from '../database/entities';
 import { BulkSyncDto, MeasurementDto } from './cgm.dto';
@@ -113,7 +113,16 @@ export class GlucoseController {
   }
   private validate(s: Sensor, d: MeasurementDto) { const time = new Date(d.measurementTime); if (!s.isActive || ['Expired', 'Stopped'].includes(s.status)) return 'The sensor session is not active.'; if (!s.activatedAt || time < s.activatedAt) return 'Warm-up measurements cannot be uploaded as glucose readings.'; if (s.expiresAt && time > s.expiresAt) return 'The measurement occurred after the sensor expired.'; if (time > new Date(Date.now() + 300_000)) return 'The measurement timestamp is in the future.'; return null; }
   private entity(userId: number, s: Sensor, d: MeasurementDto) { return this.readings.create({ userId, sensorId: s.id, deviceId: s.deviceId, sequenceNumber: d.sequenceNumber ?? null, glucoseValue: String(d.glucoseValue), measurementTime: new Date(d.measurementTime), batteryVoltageMv: d.batteryVoltageMv ?? null, deviceTemperatureC: d.deviceTemperatureC == null ? null : String(d.deviceTemperatureC), we1CurrentNa: d.we1CurrentNa == null ? null : String(d.we1CurrentNa), isSynced: true, createdAt: new Date() }); }
-  private async sensor(id: number, userId: number) { const s = await this.sensors.findOneBy({ id, userId }); if (!s) throw new NotFoundException({ message: 'Sensor not found.' }); return s; }
+  private async sensor(id: number, userId: number) {
+    const owned = await this.sensors.findOneBy({ id, userId });
+    if (owned) return owned;
+    const active = await this.sensors.findOne({
+      where: { userId, isActive: true, status: Not('Expired') },
+      order: { startedAt: 'DESC' },
+    });
+    if (!active) throw new NotFoundException({ message: 'Sensor not found.' });
+    return active;
+  }
   @Post('measurement') async save(@CurrentUser() u: AuthUser, @Body() dto: MeasurementDto) {
     const s = await this.sensor(dto.sensorId, u.sub);
     const error = this.validate(s, dto);
@@ -141,7 +150,7 @@ export class GlucoseController {
     } finally {
       await runner.release();
     }
-    try { await this.notify(u.sub, s.id, dto.glucoseValue, measurementTime); } catch (_) { }
+    void this.notify(u.sub, s.id, dto.glucoseValue, measurementTime);
     return { message: 'Measurement saved successfully.', measurementTime: dto.measurementTime };
   }
 

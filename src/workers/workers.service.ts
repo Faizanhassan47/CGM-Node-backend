@@ -6,6 +6,8 @@ import { randomUUID } from "crypto";
 import { DataSource, QueryRunner } from "typeorm";
 import { normalizeSql } from "../common/sql-helper";
 import { FirebaseAdminService } from "../firebase/firebase-admin.service";
+import { ApiQueueService } from "../redis/api-queue.service";
+import { RedisService } from "../redis/redis.service";
 
 const MAX_SUMMARY_GAP_MINUTES = 5;
 
@@ -32,7 +34,7 @@ function measurementTimeMs(value: unknown): number | null {
   );
 }
 
-function summaryDurations(readings: SummaryReading[]) {
+function summaryDurations(readings: SummaryReading[], low: number, high: number) {
   let inRangeMinutes = 0;
   let belowRangeMinutes = 0;
   let aboveRangeMinutes = 0;
@@ -45,8 +47,8 @@ function summaryDurations(readings: SummaryReading[]) {
         (readings[index + 1].measuredAtMs - readings[index].measuredAtMs) / 60000,
       ),
     );
-    if (readings[index].value < 70) belowRangeMinutes += gapMinutes;
-    else if (readings[index].value > 180) aboveRangeMinutes += gapMinutes;
+    if (readings[index].value < low) belowRangeMinutes += gapMinutes;
+    else if (readings[index].value > high) aboveRangeMinutes += gapMinutes;
     else inRangeMinutes += gapMinutes;
   }
 
@@ -66,6 +68,8 @@ export class WorkersService {
     private db: DataSource,
     private config: ConfigService,
     private firebaseAdmin: FirebaseAdminService,
+    private queue: ApiQueueService,
+    private redis: RedisService,
   ) {}
   private q(sql: string, params?: unknown[]) {
     return this.db.query(normalizeSql(sql, this.db), params);
@@ -102,6 +106,10 @@ export class WorkersService {
   }
   @Interval(10_000) async dailySummaryJobs() {
     if (!this.scheduledWorkersEnabled()) return;
+    if (!(await this.redis.lock('cgm:daily-summary', 25))) return;
+    await this.queue.run(() => this.drainDailySummaries());
+  }
+  private async drainDailySummaries() {
     try {
       const jobs = await this.q('SELECT Id,UserId,SummaryDate,RetryCount,RequestedVersion FROM DailySummaryJobs WHERE (Status IN ("Pending","Failed") AND RetryCount<3 AND (NextAttemptAt IS NULL OR NextAttemptAt<=UTC_TIMESTAMP())) OR (Status="Processing" AND LeaseExpiresAt<UTC_TIMESTAMP()) ORDER BY CreatedAt LIMIT 25');
       for (const job of jobs) {
@@ -124,6 +132,10 @@ export class WorkersService {
   }
   @Interval(10_000) async notifications() {
     if (!this.scheduledWorkersEnabled()) return;
+    if (!(await this.redis.lock('cgm:alert-push', 25))) return;
+    await this.queue.run(() => this.drainNotifications());
+  }
+  private async drainNotifications() {
     try {
       const items = await this.q(
         'SELECT q.Id QueueId,q.AlertId,q.RetryCount,a.Title,a.Message,a.UserId FROM AlertQueue q JOIN Alerts a ON a.Id=q.AlertId WHERE q.Status IN ("Pending","Failed") AND q.RetryCount<3 AND (q.NextAttemptAt IS NULL OR q.NextAttemptAt<=UTC_TIMESTAMP()) ORDER BY q.CreatedAt LIMIT 25',
@@ -329,6 +341,14 @@ export class WorkersService {
         );
       const v = readings.map((reading) => reading.value);
       if (!v.length) return;
+      const limits = await this.q(
+        'SELECT TargetLow, TargetHigh FROM PatientProfile WHERE UserId=?',
+        [userId],
+      );
+      const lowLimit = Number(limits[0]?.TargetLow ?? 70);
+      const highLimit = Number(limits[0]?.TargetHigh ?? 180);
+      const below = Number.isFinite(lowLimit) ? lowLimit : 70;
+      const above = Number.isFinite(highLimit) ? highLimit : 180;
 
       const mean = v.reduce((a: number, b: number) => a + b, 0) / v.length;
       const sorted = [...v].sort((a, b) => a - b);
@@ -343,9 +363,9 @@ export class WorkersService {
                 (v.length - 1),
             )
           : 0;
-      const low = v.filter((x: number) => x < 70).length;
-      const high = v.filter((x: number) => x > 180).length;
-      const durations = summaryDurations(readings);
+      const low = v.filter((x: number) => x < below).length;
+      const high = v.filter((x: number) => x > above).length;
+      const durations = summaryDurations(readings, below, above);
       const coveredMinutes = durations.coveredMinutes;
 
       let highEvents = 0,
@@ -353,10 +373,10 @@ export class WorkersService {
         inHigh = false,
         inLow = false;
       for (const x of v) {
-        if (x > 180 && !inHigh) highEvents++;
-        inHigh = x > 180;
-        if (x < 70 && !inLow) lowEvents++;
-        inLow = x < 70;
+        if (x > above && !inHigh) highEvents++;
+        inHigh = x > above;
+        if (x < below && !inLow) lowEvents++;
+        inLow = x < below;
       }
 
       const existing = await this.q(

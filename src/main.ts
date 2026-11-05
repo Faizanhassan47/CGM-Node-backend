@@ -12,6 +12,14 @@ import { ensureTablesExist } from './database/schema-initializer';
 async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
 
+  if (process.env.WORKER_ONLY === 'true') {
+    const { NestFactory } = await import('@nestjs/core');
+    const worker = await NestFactory.createApplicationContext(AppModule, { bufferLogs: true });
+    worker.enableShutdownHooks();
+    logger.log('Worker process started. HTTP is off. Set RUN_SCHEDULED_WORKERS=false on the API process.');
+    return;
+  }
+
   const app = await NestFactory.create(AppModule, {
     bufferLogs: true,
   });

@@ -55,6 +55,16 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  async lock(key: string, ttlSeconds: number): Promise<boolean> {
+    if (!this.client || !this.isConnected) return true;
+    try {
+      const result = await this.client.set(key, '1', 'EX', ttlSeconds, 'NX');
+      return result === 'OK';
+    } catch {
+      return true;
+    }
+  }
+
   async ping(): Promise<boolean> {
     if (!this.client || !this.isConnected) return false;
     try {
