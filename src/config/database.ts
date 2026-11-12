@@ -1,5 +1,10 @@
 import { TypeOrmModuleOptions } from '@nestjs/typeorm';
 
+/** Hostinger MySQL hostname moves; keep known old → current remaps here. */
+const HOSTINGER_MYSQL_HOST_REMAP: Record<string, string> = {
+  'srv1458.hstgr.io': 'srv2092.hstgr.io',
+};
+
 export function parseDotnetConnectionString(value: string): Record<string, string> {
   const normalized = value.trim().replace(/^['"]|['"]$/g, '');
   return Object.fromEntries(normalized.split(';').filter(Boolean).map((item) => {
@@ -8,8 +13,34 @@ export function parseDotnetConnectionString(value: string): Record<string, strin
   }));
 }
 
+/**
+ * Rewrite stale Hostinger MySQL hosts in DB_CONNECTION_STRING so production
+ * keeps working after a panel hostname change without a stuck "Starting" state.
+ */
+export function normalizeDbConnectionString(value: string): {
+  connectionString: string;
+  remappedFrom?: string;
+  remappedTo?: string;
+} {
+  const trimmed = value.trim().replace(/^['"]|['"]$/g, '');
+  const parts = parseDotnetConnectionString(trimmed);
+  const host = (parts.server ?? parts.host ?? '').toLowerCase();
+  const mapped = HOSTINGER_MYSQL_HOST_REMAP[host];
+  if (!mapped) {
+    return { connectionString: trimmed };
+  }
+  const rewritten = trimmed.replace(new RegExp(host.replace(/\./g, '\\.'), 'ig'), mapped);
+  return {
+    connectionString: rewritten,
+    remappedFrom: host,
+    remappedTo: mapped,
+  };
+}
+
 export function databaseConfig(connectionString: string): TypeOrmModuleOptions {
-  const c = parseDotnetConnectionString(connectionString);
+  const c = parseDotnetConnectionString(
+    normalizeDbConnectionString(connectionString).connectionString,
+  );
   const sslMode = (c.sslmode ?? '').toLowerCase();
   const isMssql = 'trusted_connection' in c || 'trustservercertificate' in c;
   return {

@@ -9,17 +9,32 @@ import helmet from 'helmet';
 import { DataSource } from 'typeorm';
 
 import { AppModule } from './app.module';
+import { normalizeDbConnectionString } from './config/database';
 import { ensureTablesExist } from './database/schema-initializer';
 
 const listenPort = Number(process.env.PORT ?? process.env.API_PORT ?? '5232');
 let nestHandler: ((req: IncomingMessage, res: ServerResponse) => void) | undefined;
+let startupFailure: string | undefined;
+
+if (process.env.DB_CONNECTION_STRING) {
+  const normalized = normalizeDbConnectionString(process.env.DB_CONNECTION_STRING);
+  process.env.DB_CONNECTION_STRING = normalized.connectionString;
+  if (normalized.remappedFrom && normalized.remappedTo) {
+    // Keep this on stdout so Hostinger logs show why the host changed.
+    console.warn(
+      `[Bootstrap] Remapped MySQL host ${normalized.remappedFrom} -> ${normalized.remappedTo}`,
+    );
+  }
+}
+
 const httpServer = createServer((req, res) => {
   if (nestHandler) {
     nestHandler(req, res);
     return;
   }
   res.statusCode = 503;
-  res.end('Starting');
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.end(startupFailure ? `Startup failed: ${startupFailure}` : 'Starting');
 });
 if (process.env.WORKER_ONLY !== 'true' && Number.isInteger(listenPort) && listenPort >= 1 && listenPort <= 65535) {
   httpServer.listen(listenPort, '0.0.0.0');
@@ -192,11 +207,16 @@ async function bootstrap(): Promise<void> {
 // --------------------------------------------
 bootstrap().catch((error: unknown) => {
   const logger = new Logger('Bootstrap');
+  const message =
+    error instanceof Error ? error.message : String(error);
 
+  startupFailure = message;
   logger.error(
     'Application startup failed',
     error instanceof Error ? error.stack : String(error),
   );
 
+  // Exit so the host restarts after env/DB fixes instead of serving "Starting" forever.
+  setTimeout(() => process.exit(1), 250).unref?.();
   process.exitCode = 1;
 });
