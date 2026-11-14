@@ -11,6 +11,8 @@ import { DataSource } from 'typeorm';
 import { AppModule } from './app.module';
 import { normalizeDbConnectionString } from './config/database';
 import { ensureTablesExist } from './database/schema-initializer';
+import { RedisService } from './redis/redis.service';
+import { RedisIoAdapter } from './realtime/redis-io.adapter';
 
 const listenPort = Number(process.env.PORT ?? process.env.API_PORT ?? '5232');
 let nestHandler: ((req: IncomingMessage, res: ServerResponse) => void) | undefined;
@@ -80,18 +82,35 @@ async function bootstrap(): Promise<void> {
   if (trustProxy !== 'false' && trustProxy !== '') {
     if (trustProxy === 'loopback') {
       expressInstance.set('trust proxy', 'loopback');
+    } else if (/^\d+$/.test(trustProxy)) {
+      // Hop count behind nginx/ALB (e.g. TRUST_PROXY=1)
+      expressInstance.set('trust proxy', Number(trustProxy));
     } else if (
-      trustProxy !== 'true' &&
-      trustProxy !== '1'
+      trustProxy !== 'true'
     ) {
       // Explicit trusted proxy IP or CIDR range
       expressInstance.set('trust proxy', trustProxy);
     } else {
       logger.warn(
         'Unrestricted TRUST_PROXY ignored. ' +
-        'Configure a verified proxy address.',
+        'Use hop count (1) or a verified proxy address.',
       );
     }
+  }
+
+  // Multi-node Socket.IO fan-out via Redis (no-op when Redis is down).
+  try {
+    const redis = app.get(RedisService);
+    const redisIoAdapter = new RedisIoAdapter(app, redis);
+    if (await redisIoAdapter.connectToRedis()) {
+      app.useWebSocketAdapter(redisIoAdapter);
+    }
+  } catch (error) {
+    logger.warn(
+      `Socket.IO Redis adapter not attached: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
   }
 
   // --------------------------------------------
@@ -193,11 +212,17 @@ async function bootstrap(): Promise<void> {
 
   logger.log('Database initialization completed');
 
+  const instanceId =
+    config.get<string>('INSTANCE_ID') ?? process.env.HOSTNAME ?? 'api';
+  const workersOn = config.get<string>('RUN_SCHEDULED_WORKERS') !== 'false';
   logger.log('========================================');
   logger.log('AIMA CGM Backend Started Successfully');
   logger.log(`Environment: ${isProduction ? 'Production' : 'Development'}`);
+  logger.log(`Instance: ${instanceId}`);
   logger.log(`Port: ${port}`);
   logger.log(`Database: Connected (${activeDatabase})`);
+  logger.log(`Scheduled workers: ${workersOn ? 'ON (prefer dedicated start:worker)' : 'OFF (API-only)'}`);
+  logger.log(`Health live: GET /health/live`);
   logger.log(`Swagger: ${swaggerEnabled ? 'Enabled' : 'Disabled'}`);
   logger.log('========================================');
 }

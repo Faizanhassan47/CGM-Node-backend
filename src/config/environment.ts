@@ -12,6 +12,11 @@ class Environment {
   @IsOptional() @IsString() CORS_ALLOWED_ORIGINS?: string;
   @IsOptional() @IsString() REDIS_ENABLED?: string;
   @IsOptional() @IsString() REDIS_URL?: string;
+  @IsOptional() @IsString() REDIS_REQUIRED?: string;
+  @IsOptional() @IsString() INSTANCE_ID?: string;
+  @IsOptional() @IsString() TRUST_PROXY?: string;
+  @IsOptional() @IsString() RUN_SCHEDULED_WORKERS?: string;
+  @IsOptional() @IsString() WORKER_ONLY?: string;
   @IsOptional() @IsString() OPENAI_API_KEY?: string;
   @IsOptional() @IsString() OPENAI_MODEL?: string;
   @IsOptional() @IsString() IDRIVE_ENDPOINT?: string;

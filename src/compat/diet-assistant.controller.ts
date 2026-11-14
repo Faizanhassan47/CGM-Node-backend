@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Post } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Post, Req } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { AuthUser, CurrentUser } from '../common/auth-user';
 import { normalizeSql } from '../common/sql-helper';
@@ -10,7 +10,11 @@ export class DietAssistantController {
   private q(sql: string, params?: unknown[]) { return this.db.query(normalizeSql(sql, this.db), params); }
 
   @Post('chat')
-  async chat(@CurrentUser() user: AuthUser, @Body() body: { message?: string }) {
+  async chat(
+    @CurrentUser() user: AuthUser,
+    @Body() body: { message?: string },
+    @Req() req: { abortSignal?: AbortSignal },
+  ) {
     const message = body?.message?.trim();
     if (!message || message.length > 2000) throw new BadRequestException('Message must be between 1 and 2,000 characters.');
     const [profile, readings, meals, water, summaries] = await Promise.all([
@@ -28,6 +32,10 @@ export class DietAssistantController {
       highestGlucose: Math.max(...values),
       timeInRangePercentage: Math.round(values.filter((value: number) => value >= 70 && value <= 180).length / values.length * 1000) / 10,
     } : { readingCount: 0 };
-    return this.assistant.answer(message, { profile: profile[0] ?? {}, metrics, dailySummaries: summaries, readings, meals, water });
+    return this.assistant.answer(
+      message,
+      { profile: profile[0] ?? {}, metrics, dailySummaries: summaries, readings, meals, water },
+      req.abortSignal,
+    );
   }
 }

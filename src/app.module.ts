@@ -21,6 +21,7 @@ import { WellnessModule } from './wellness/wellness.module';
 import { ApiMetricsInterceptor } from './common/interceptors/api-metrics.interceptor';
 import { ApiQueueInterceptor } from './redis/api-queue.interceptor';
 import { RedisModule } from './redis/redis.module';
+import { RedisThrottlerStorage } from './redis/redis-throttler.storage';
 
 const selectedEnvFile = process.env.DOTENV_CONFIG_PATH;
 
@@ -32,6 +33,9 @@ const selectedEnvFile = process.env.DOTENV_CONFIG_PATH;
       envFilePath: selectedEnvFile ? [selectedEnvFile] : ['.env.local', '.env'],
       validate: validateEnvironment,
     }),
+
+    // Shared Redis before throttler so rate limits can be cross-node.
+    RedisModule,
 
     // Database configuration
     TypeOrmModule.forRootAsync({
@@ -45,31 +49,34 @@ const selectedEnvFile = process.env.DOTENV_CONFIG_PATH;
     // Scheduled background tasks
     ScheduleModule.forRoot(),
 
-    // API rate limiting
-    ThrottlerModule.forRoot({
-      throttlers: [
-        {
-          name: 'default',
-          ttl: 60_000,
-          limit: 100,
-        },
-      ],
-
-      // Exempt only the public root GET endpoint.
-      // Other routes retain their rate limits.
-      skipIf: (context) => {
-        const request = context
-          .switchToHttp()
-          .getRequest<{
+    // API rate limiting (Redis-backed when REDIS_ENABLED=true)
+    ThrottlerModule.forRootAsync({
+      imports: [RedisModule],
+      inject: [RedisThrottlerStorage],
+      useFactory: (storage: RedisThrottlerStorage) => ({
+        throttlers: [
+          {
+            name: 'default',
+            ttl: 60_000,
+            limit: 100,
+          },
+        ],
+        storage,
+        skipIf: (context) => {
+          const request = context.switchToHttp().getRequest<{
             method: string;
             path: string;
           }>();
-
-        return (
-          request.method === 'GET' &&
-          request.path === '/'
-        );
-      },
+          if (request.method !== 'GET') return false;
+          const path = request.path ?? '';
+          return (
+            path === '/' ||
+            path === '/health' ||
+            path.startsWith('/health/') ||
+            path === '/metrics'
+          );
+        },
+      }),
     }),
 
     // Application modules
@@ -79,7 +86,6 @@ const selectedEnvFile = process.env.DOTENV_CONFIG_PATH;
     FamilyModule,
     WorkersModule,
     WellnessModule,
-    RedisModule,
   ],
 
   controllers: [

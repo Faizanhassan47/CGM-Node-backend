@@ -8,11 +8,14 @@
     "dev": "nest start --watch",
     "start": "node dist/main.js",
     "start:worker": "node dist/worker.js",
+    "start:pm2": "pm2 start ecosystem.config.cjs",
     "start:dev": "nest start --watch",
     "lint": "eslint \"{src,test}/**/*.ts\"",
-    "test": "jest --runInBand",
+    "test": "jest --runInBand --forceExit",
     "test:e2e": "jest --config test/jest-e2e.json --runInBand",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "smoke": "node scripts/smoke-test.js",
+    "smoke:staging": "node scripts/smoke-test.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1153.0",
@@ -29,6 +32,7 @@
     "@nestjs/throttler": "^6.4.0",
     "@nestjs/typeorm": "^11.0.0",
     "@nestjs/websockets": "^11.1.6",
+    "@socket.io/redis-adapter": "^8.3.0",
     "@types/multer": "^2.3.0",
     "@types/passport-jwt": "^4.0.1",
     "bcryptjs": "^3.0.2",

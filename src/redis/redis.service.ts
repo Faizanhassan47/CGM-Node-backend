@@ -6,6 +6,7 @@ import Redis from 'ioredis';
 export class RedisService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(RedisService.name);
   private client?: Redis;
+  private readonly secondary = new Set<Redis>();
 
   constructor(private readonly config: ConfigService) {}
 
@@ -17,9 +18,24 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     return this.client?.status === 'ready';
   }
 
+  getClient(): Redis | undefined {
+    return this.isConnected ? this.client : undefined;
+  }
+
+  /** Dedicated pub/sub clients for Socket.IO adapter (must not share with command client). */
+  createPubSubPair(): { pub: Redis; sub: Redis } | undefined {
+    const url = this.config.get<string>('REDIS_URL');
+    if (!this.enabled || !url || !this.isConnected) return undefined;
+    const pub = this.createClient(url);
+    const sub = this.createClient(url);
+    this.secondary.add(pub);
+    this.secondary.add(sub);
+    return { pub, sub };
+  }
+
   async onModuleInit(): Promise<void> {
     if (!this.enabled) {
-      this.logger.log('Redis disabled; using database-backed queues.');
+      this.logger.log('Redis disabled; using database-backed queues and local throttling.');
       return;
     }
 
@@ -29,23 +45,14 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    this.client = new Redis(url, {
-      lazyConnect: true,
-      maxRetriesPerRequest: 1,
-      enableOfflineQueue: false,
-      connectTimeout: 5_000,
-      retryStrategy: () => null,
-    });
-    this.client.on('error', (error) => {
-      this.logger.warn(
-        `Redis connection error: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    });
+    this.client = this.createClient(url);
 
     try {
-      await this.client.connect();
+      if (this.client.status === 'wait') {
+        await this.client.connect();
+      }
       await this.client.ping();
-      this.logger.log('Redis connection verified.');
+      this.logger.log('Redis connection verified (shared locks, throttling, WS fan-out).');
     } catch (error) {
       this.logger.error(
         `Redis connection failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -75,6 +82,26 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
+    for (const client of this.secondary) {
+      await client.quit().catch(() => undefined);
+    }
+    this.secondary.clear();
     if (this.client) await this.client.quit().catch(() => undefined);
+  }
+
+  private createClient(url: string): Redis {
+    const client = new Redis(url, {
+      lazyConnect: true,
+      maxRetriesPerRequest: 2,
+      enableOfflineQueue: false,
+      connectTimeout: 5_000,
+      retryStrategy: (times) => Math.min(times * 200, 2_000),
+    });
+    client.on('error', (error) => {
+      this.logger.warn(
+        `Redis connection error: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+    return client;
   }
 }

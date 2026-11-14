@@ -1,65 +1,129 @@
 import { Injectable, RequestTimeoutException, ServiceUnavailableException } from '@nestjs/common';
 
+export type QueueLane = 'light' | 'heavy';
+
 type Job = () => void;
 
+type LaneState = {
+  active: number;
+  limit: number;
+  maxWaiting: number;
+  timeoutMs: number;
+  waiting: Job[];
+};
+
+export type QueueSnapshot = {
+  light: { active: number; waiting: number; limit: number };
+  heavy: { active: number; waiting: number; limit: number };
+  depth: number;
+};
+
 /**
- * One in-process queue for API work and background jobs.
- * HTTP calls wait for a slot, give up when the line is too long, and time out.
- * Background jobs wait without that limit.
+ * Dual in-process queues so auth/light traffic is not blocked by sync-bulk/AI.
+ * HTTP work gets an AbortSignal and times out; background jobs do not.
  */
 @Injectable()
 export class ApiQueueService {
-  private active = 0;
-  private readonly limit = 8;
-  private readonly maxWaiting = 40;
-  private readonly waiting: Job[] = [];
+  private readonly lanes: Record<QueueLane, LaneState> = {
+    light: { active: 0, limit: 12, maxWaiting: 80, timeoutMs: 10_000, waiting: [] },
+    heavy: { active: 0, limit: 4, maxWaiting: 24, timeoutMs: 25_000, waiting: [] },
+  };
 
   get depth(): number {
-    return this.waiting.length;
+    return this.lanes.light.waiting.length + this.lanes.heavy.waiting.length;
   }
 
-  run<T>(work: () => Promise<T>): Promise<T> {
-    return this.schedule(work, false);
+  snapshot(): QueueSnapshot {
+    const light = this.lanes.light;
+    const heavy = this.lanes.heavy;
+    return {
+      light: { active: light.active, waiting: light.waiting.length, limit: light.limit },
+      heavy: { active: heavy.active, waiting: heavy.waiting.length, limit: heavy.limit },
+      depth: this.depth,
+    };
   }
 
-  runHttp<T>(work: () => Promise<T>): Promise<T> {
-    return this.schedule(work, true);
+  /** Background / worker jobs (no HTTP timeout). Uses heavy lane capacity. */
+  run<T>(work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    return this.schedule('heavy', work, false);
   }
 
-  private schedule<T>(work: () => Promise<T>, http: boolean): Promise<T> {
-    if (http && this.waiting.length >= this.maxWaiting) {
-      return Promise.reject(new ServiceUnavailableException('Server is busy. Try again.'));
+  runHttp<T>(
+    lane: QueueLane,
+    work: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    return this.schedule(lane, work, true);
+  }
+
+  private schedule<T>(
+    laneName: QueueLane,
+    work: (signal: AbortSignal) => Promise<T>,
+    http: boolean,
+  ): Promise<T> {
+    const lane = this.lanes[laneName];
+    if (http && lane.waiting.length >= lane.maxWaiting) {
+      return Promise.reject(
+        new ServiceUnavailableException(
+          laneName === 'heavy'
+            ? 'Sync queue is busy. Try again shortly.'
+            : 'Server is busy. Try again.',
+        ),
+      );
     }
+
     return new Promise<T>((resolve, reject) => {
       const start = () => {
-        this.active += 1;
+        lane.active += 1;
+        const controller = new AbortController();
         let released = false;
         const release = () => {
           if (released) return;
           released = true;
-          this.active -= 1;
-          const next = this.waiting.shift();
+          lane.active -= 1;
+          const next = lane.waiting.shift();
           if (next) next();
         };
+
         let settled = false;
         const finish = (ok: boolean, value: T | unknown) => {
           if (settled) return;
           settled = true;
+          if (!ok && !controller.signal.aborted) {
+            controller.abort();
+          }
           release();
           if (ok) resolve(value as T);
           else reject(value);
         };
-        const job = Promise.resolve().then(work);
-        job.then(
-          (value) => finish(true, value),
-          (error) => finish(false, error),
-        );
+
+        let timer: ReturnType<typeof setTimeout> | undefined;
         if (http) {
-          setTimeout(() => finish(false, new RequestTimeoutException('Request timed out.')), 10_000);
+          timer = setTimeout(() => {
+            controller.abort();
+            finish(false, new RequestTimeoutException('Request timed out.'));
+          }, lane.timeoutMs);
         }
+
+        Promise.resolve()
+          .then(() => work(controller.signal))
+          .then(
+            (value) => {
+              if (timer) clearTimeout(timer);
+              finish(true, value);
+            },
+            (error) => {
+              if (timer) clearTimeout(timer);
+              if (controller.signal.aborted && !(error instanceof RequestTimeoutException)) {
+                finish(false, new RequestTimeoutException('Request timed out.'));
+                return;
+              }
+              finish(false, error);
+            },
+          );
       };
-      if (this.active < this.limit) start();
-      else this.waiting.push(start);
+
+      if (lane.active < lane.limit) start();
+      else lane.waiting.push(start);
     });
   }
 }

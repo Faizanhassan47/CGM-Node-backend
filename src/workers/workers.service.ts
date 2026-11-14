@@ -8,6 +8,7 @@ import { normalizeSql } from "../common/sql-helper";
 import { FirebaseAdminService } from "../firebase/firebase-admin.service";
 import { ApiQueueService } from "../redis/api-queue.service";
 import { RedisService } from "../redis/redis.service";
+import { WorkerMetricsService } from "./worker-metrics.service";
 
 const MAX_SUMMARY_GAP_MINUTES = 5;
 
@@ -70,6 +71,7 @@ export class WorkersService {
     private firebaseAdmin: FirebaseAdminService,
     private queue: ApiQueueService,
     private redis: RedisService,
+    private workerMetrics: WorkerMetricsService,
   ) {}
   private q(sql: string, params?: unknown[]) {
     return this.db.query(normalizeSql(sql, this.db), params);
@@ -126,7 +128,9 @@ export class WorkersService {
           this.log.error(`[DAILY-SUMMARIES] Job ${job.Id} failed`, error instanceof Error ? error.stack : String(error));
         }
       }
+      this.workerMetrics.markDailySummary(true);
     } catch (error) {
+      this.workerMetrics.markDailySummary(false, error instanceof Error ? error.message : String(error));
       this.log.error('[DAILY-SUMMARIES] Queue polling failed', error instanceof Error ? error.stack : String(error));
     }
   }
@@ -196,7 +200,9 @@ export class WorkersService {
           ],
         );
       }
+      this.workerMetrics.markNotifications(true);
     } catch (err: any) {
+      this.workerMetrics.markNotifications(false, err?.message || String(err));
       this.log.warn(
         `Notification queue polling skipped: ${err?.message || err}`,
       );
@@ -446,6 +452,7 @@ export class WorkersService {
   @Cron(CronExpression.EVERY_MINUTE)
   async operations() {
     if (!this.scheduledWorkersEnabled()) return;
+    this.workerMetrics.markOperations();
     await this.q(
       'UPDATE AlertQueue SET Status="Pending",ProcessingStartedAt=NULL,LeaseExpiresAt=NULL,LeaseOwner=NULL,NextAttemptAt=UTC_TIMESTAMP(),ErrorMessage="Recovered expired processing lease" WHERE Status="Processing" AND LeaseExpiresAt IS NOT NULL AND LeaseExpiresAt<UTC_TIMESTAMP()',
     );

@@ -18,7 +18,7 @@ export class DietAssistantService {
     return /glucose|cgm|diabet|meal|food|eat|breakfast|lunch|dinner|snack|nutrition|diet|fiber|protein|carb|hydration|water|report|time in range|gmi|insulin|sugar/i.test(message);
   }
 
-  async answer(message: string, context: Record<string, unknown>) {
+  async answer(message: string, context: Record<string, unknown>, signal?: AbortSignal) {
     if (!this.isInScope(message)) {
       return { answer: 'I can help only with your CGM readings, glucose reports, meals, nutrition, hydration, and food planning.', scope: 'cgm-diet-wellness' };
     }
@@ -29,7 +29,7 @@ export class DietAssistantService {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ model, instructions: SYSTEM_INSTRUCTIONS, input: `User question:\n${message}\n\nAuthenticated CGM context:\n${JSON.stringify(context)}`, max_output_tokens: 700 }),
-      signal: AbortSignal.timeout(30_000),
+      signal: signal ?? AbortSignal.timeout(25_000),
     });
     if (!response.ok) throw new ServiceUnavailableException('Diet assistant is temporarily unavailable.');
     const data = await response.json() as { output_text?: string };
