@@ -10,3 +10,5 @@ package.json.backup
 package-lock.json.backup
 !.env.example
 !.env.example
+
+.env.hostinger-upload
