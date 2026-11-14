@@ -11,7 +11,7 @@ import {
 export class RegisterDto {
   @IsString() fullName!: string;
   @IsEmail() email!: string;
-  @MinLength(6) password!: string;
+  @MinLength(8) password!: string;
   @IsOptional() @IsString() phoneNumber?: string;
   @IsOptional() @IsDateString() dateOfBirth?: string;
   @IsOptional()
@@ -31,7 +31,7 @@ export class RefreshDto {
 }
 export class ChangePasswordDto {
   @IsOptional() @IsString() currentPassword?: string;
-  @MinLength(6) newPassword!: string;
+  @MinLength(8) newPassword!: string;
 }
 export class SocialDto {
   @IsString() idToken!: string;
@@ -55,5 +55,5 @@ export class VerifyResetDto extends EmailDto {
 export class ResetPasswordDto extends EmailDto {
   @IsOptional() @IsString() tokenOrCode?: string;
   @IsOptional() @IsString() token?: string;
-  @MinLength(6) newPassword!: string;
+  @MinLength(8) newPassword!: string;
 }

@@ -16,6 +16,11 @@ export class SensorsController {
     const serial = dto.sensorIdentifier.trim();
     if (!serial) throw new BadRequestException({ message: 'A verified sensor serial number is required.' });
     const existingActive = await this.sensors.findBy({ sensorIdentifier: serial, isActive: true });
+    if (existingActive.some((s) => s.userId !== u.sub)) {
+      throw new ConflictException({
+        message: 'This sensor is already active on another account.',
+      });
+    }
     if (existingActive.length) {
       for (const s of existingActive) {
         Object.assign(s, { status: 'Expired', isActive: false, endedAt: new Date() });

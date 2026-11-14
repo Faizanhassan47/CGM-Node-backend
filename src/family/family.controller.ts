@@ -1,11 +1,12 @@
 import { BadRequestException, Body, Controller, Delete, ForbiddenException, Get, NotFoundException, Param, Post, Put } from '@nestjs/common';
-import { IsBoolean, IsNumber, IsOptional, IsString } from 'class-validator';
+import { Throttle } from '@nestjs/throttler';
+import { IsBoolean, IsIn, IsNumber, IsOptional, IsString } from 'class-validator';
 import { DataSource } from 'typeorm';
 import { AuthUser, CurrentUser } from '../common/auth-user';
 import { normalizeSql } from '../common/sql-helper';
 class JoinDto { @IsString() referralCode!: string; }
 class AlertDto { @IsBoolean() receiveAlerts!: boolean; }
-class RoleDto { @IsString() role!: string; }
+class RoleDto { @IsIn(['Owner', 'Member', 'Caregiver', 'Clinician']) role!: string; }
 class ThresholdDto { @IsOptional() @IsNumber() lowThreshold?:number; @IsOptional() @IsNumber() highThreshold?:number; }
 @Controller('api/Family')
 export class FamilyController {
@@ -74,6 +75,7 @@ export class FamilyController {
     return enriched;
   }
   @Post('create') async create(@CurrentUser()u:AuthUser){if(await this.familyFor(u.sub))throw new BadRequestException({message:'User already belongs to a family.'});await this.q('INSERT INTO Families(OwnerUserId,CreatedAt,IsActive) VALUES(?,UTC_TIMESTAMP(),1)',[u.sub]);const fRow=(await this.q('SELECT TOP 1 Id FROM Families WHERE OwnerUserId=? ORDER BY Id DESC',[u.sub]))[0];const familyId=fRow?.Id??fRow?.id;await this.q('INSERT INTO FamilyMembers(FamilyId,UserId,Role,ReceiveAlerts,Status,JoinedAt) VALUES(?,?,"Owner",1,"Active",UTC_TIMESTAMP())',[familyId,u.sub]);return{familyId};}
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('join') async join(@CurrentUser()u:AuthUser,@Body()d:JoinDto){if(await this.familyFor(u.sub))throw new BadRequestException({message:'User already belongs to a family.'});const owners=await this.q('SELECT f.Id FROM Families f JOIN Users u ON u.Id=f.OwnerUserId WHERE u.ReferralCode=? AND f.IsActive=1',[d.referralCode.trim()]);if(!owners.length)throw new NotFoundException({message:'Invalid referral code.'});await this.q('INSERT INTO FamilyMembers(FamilyId,UserId,Role,ReceiveAlerts,Status,JoinedByReferralCode,JoinedAt) VALUES(?,?,"Member",1,"Active",?,UTC_TIMESTAMP())',[owners[0].Id,u.sub,d.referralCode.trim()]);return{message:'Joined family successfully.'};}
   private async owner(familyId: number, userId: number) {
     const rows = await this.q('SELECT OwnerUserId, Id FROM Families WHERE Id=?', [familyId]);

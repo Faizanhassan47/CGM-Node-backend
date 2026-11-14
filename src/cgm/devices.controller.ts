@@ -14,6 +14,11 @@ export class DevicesController {
   @Get(':id') async one(@CurrentUser() u: AuthUser, @Param('id') id: string) { return this.view(await this.owned(Number(id), u.sub)); }
   @Post('register') async register(@CurrentUser() u: AuthUser, @Body() dto: RegisterDeviceDto) {
     let device = dto.serialNumber ? await this.devices.findOneBy({ serialNumber: dto.serialNumber }) : null;
+    if (device && device.userId !== u.sub && device.isActive) {
+      throw new ConflictException({
+        message: 'This device is already registered to another account.',
+      });
+    }
     device ??= this.devices.create({ createdAt: new Date() });
     Object.assign(device, dto, {
       userId: u.sub,

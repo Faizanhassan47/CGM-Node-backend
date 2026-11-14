@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   UnauthorizedException,
 } from "@nestjs/common";
@@ -105,6 +106,7 @@ export class AuthService {
         name: user.fullName,
         auth_provider: user.authProvider,
         role: "Patient",
+        token_version: user.tokenVersion,
       },
       { expiresIn: `${accessMinutes}m` },
     );
@@ -136,36 +138,10 @@ export class AuthService {
     console.log(`[AUTH] Register request received for: ${email}`);
     const existing = await this.users.findOne({ where: { email } });
     if (existing) {
-      if (existing.isActive) {
-        throw new BadRequestException({
-          message:
-            "An account with this email already exists. Please log in instead.",
-        });
-      }
-      existing.fullName = dto.fullName.trim();
-      existing.passwordHash = this.hash(dto.password);
-      existing.authProvider = "Email";
-      existing.googleSubjectId = null;
-      existing.appleSubjectId = null;
-      existing.emailVerified = true;
-      existing.isActive = true;
-      existing.referralCode = existing.referralCode || randomBytes(5).toString("hex").toUpperCase();
-      existing.tokenVersion += 1;
-      existing.updatedAt = new Date();
-      const reactivated = await this.users.save(existing);
-      const profile = await this.profiles.findOneBy({ userId: existing.id });
-      if (profile) {
-        Object.assign(profile, {
-          phoneNumber: dto.phoneNumber?.trim() || null,
-          dateOfBirth: dto.dateOfBirth ?? null,
-          gender: dto.gender ?? null,
-          preferredGlucoseUnit: dto.preferredGlucoseUnit,
-          profileCompleted: true,
-          updatedAt: new Date(),
-        });
-        await this.profiles.save(profile);
-      }
-      return this.response(reactivated);
+      throw new BadRequestException({
+        message:
+          "An account with this email already exists. Please log in instead.",
+      });
     }
 
     const user = await this.users.save(
@@ -174,9 +150,10 @@ export class AuthService {
         email,
         passwordHash: this.hash(dto.password),
         authProvider: "Email",
-        emailVerified: true,
+        // Email/password accounts start unverified; Google social sets verified.
+        emailVerified: false,
         isActive: true,
-        referralCode: randomBytes(5).toString("hex").toUpperCase(),
+        referralCode: randomBytes(8).toString("hex").toUpperCase(),
         tokenVersion: 0,
         createdAt: new Date(),
       }),
@@ -216,7 +193,7 @@ export class AuthService {
     if (!user.isActive) {
       throw new UnauthorizedException({
         message:
-          "This account is disabled. Register again with this email and complete your account details to reactivate it.",
+          "This account is disabled. Contact support to reactivate it.",
       });
     }
     user.lastLoginAt = new Date();
@@ -316,11 +293,11 @@ export class AuthService {
         `[AUTH-GOOGLE] Verified Google Token: email=${google.email}, sub=${google.sub}, aud=${google.aud}`,
       );
 
-      const allowedAudiences = [
-        clientId,
-        "203000957883-r5lchnrp5e9mq03dt95fb0qg64io5hrg.apps.googleusercontent.com",
-        "203000957883-58esulhtj8lnvvfu07bmilkks96bqju8.apps.googleusercontent.com",
-      ];
+      const extraAudiences = (this.config.get<string>("GOOGLE_CLIENT_IDS") ?? "")
+        .split(",")
+        .map((v) => v.trim())
+        .filter(Boolean);
+      const allowedAudiences = Array.from(new Set([clientId, ...extraAudiences]));
 
       const isAudValid = allowedAudiences.includes(google.aud);
       const isEmailVerified =
@@ -349,9 +326,27 @@ export class AuthService {
     }
 
     const email = google.email.toLowerCase();
-    let user = await this.users.findOne({
-      where: [{ googleSubjectId: google.sub }, { email }],
-    });
+    let user = await this.users.findOne({ where: { googleSubjectId: google.sub } });
+    if (!user) {
+      const byEmail = await this.users.findOne({ where: { email } });
+      if (byEmail) {
+        // Do not silently absorb an email/password account into Google.
+        if (byEmail.googleSubjectId && byEmail.googleSubjectId !== google.sub) {
+          throw new ConflictException({
+            success: false,
+            message: "This email is linked to a different Google account.",
+          });
+        }
+        if (!byEmail.googleSubjectId && byEmail.passwordHash) {
+          throw new ConflictException({
+            success: false,
+            message:
+              "An email/password account already exists for this address. Sign in with email, then link Google from profile.",
+          });
+        }
+        user = byEmail;
+      }
+    }
 
     if (user && !user.isActive) {
       await this.anonymizeDeletedAccount(user.id);
@@ -376,7 +371,7 @@ export class AuthService {
             googleSubjectId: google.sub,
             emailVerified: true,
             isActive: true,
-            referralCode: randomBytes(5).toString("hex").toUpperCase(),
+            referralCode: randomBytes(8).toString("hex").toUpperCase(),
             tokenVersion: 0,
             createdAt: new Date(),
             lastLoginAt: new Date(),
@@ -511,7 +506,13 @@ export class AuthService {
       secure,
       auth: user && pass ? { user, pass } : undefined,
       tls: {
-        rejectUnauthorized: false,
+        // Require valid certs in production; keep relaxed only when SMTP_TLS_INSECURE=true.
+        rejectUnauthorized:
+          this.config.get<string>("SMTP_TLS_INSECURE") === "true"
+            ? false
+            : this.config.get<string>("NODE_ENV") !== "production"
+              ? false
+              : true,
         servername: this.config.get<string>("SMTP_TLS_SERVERNAME") || host,
       },
       connectionTimeout: 15000,

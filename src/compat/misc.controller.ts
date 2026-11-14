@@ -215,13 +215,18 @@ export class AdminController {
   }
 
   private checkAdmin(u: AuthUser) {
-    const adminEmails = (
-      process.env.ADMIN_EMAILS || "admin@circle.com,admin@gms-world.co"
-    )
+    const configured = (process.env.ADMIN_EMAILS || "")
       .split(",")
-      .map((e) => e.trim().toLowerCase());
+      .map((e) => e.trim().toLowerCase())
+      .filter(Boolean);
+    if (!configured.length) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        message: "Forbidden: Admin access is not configured.",
+      });
+    }
     const isEmailAdmin =
-      u?.email && adminEmails.includes(u.email.toLowerCase());
+      u?.email && configured.includes(u.email.toLowerCase());
     if (!isEmailAdmin) {
       throw new ForbiddenException({
         statusCode: 403,

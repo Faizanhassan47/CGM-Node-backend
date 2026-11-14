@@ -20,6 +20,12 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     if (payload.token_type === 'refresh') throw new UnauthorizedException();
     const user = await this.users.findOneBy({ id: Number(payload.sub), isActive: true });
     if (!user) throw new UnauthorizedException();
+    if (
+      typeof payload.token_version === 'number' &&
+      payload.token_version !== user.tokenVersion
+    ) {
+      throw new UnauthorizedException();
+    }
     return { sub: user.id, email: user.email, tokenVersion: user.tokenVersion };
   }
 }

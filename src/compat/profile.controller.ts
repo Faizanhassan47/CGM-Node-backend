@@ -99,7 +99,11 @@ export class ProfileController {
   }
 
   @Post("picture")
-  @UseInterceptors(FileInterceptor("file"))
+  @UseInterceptors(
+    FileInterceptor("file", {
+      limits: { fileSize: 5 * 1024 * 1024 },
+    }),
+  )
   async uploadPicture(
     @CurrentUser() u: AuthUser,
     @UploadedFile() file?: { buffer: Buffer; mimetype: string; originalname: string },
@@ -107,7 +111,18 @@ export class ProfileController {
     if (!file || !file.buffer) {
       throw new BadRequestException({ message: "No file provided for upload." });
     }
-    const ext = file.originalname.split(".").pop() || "jpg";
+    const allowed = new Set(["image/jpeg", "image/png", "image/webp"]);
+    if (!allowed.has((file.mimetype || "").toLowerCase())) {
+      throw new BadRequestException({
+        message: "Only JPEG, PNG, or WebP images are allowed.",
+      });
+    }
+    const ext =
+      file.mimetype === "image/png"
+        ? "png"
+        : file.mimetype === "image/webp"
+          ? "webp"
+          : "jpg";
     const key = `avatars/user_${u.sub}_${Date.now()}.${ext}`;
     const pictureKey = await this.storage.uploadFile(key, file.buffer, file.mimetype);
 
@@ -146,7 +161,14 @@ export class ProfileController {
       gender: dto.gender !== undefined ? dto.gender || null : profile.gender,
       profilePictureUrl:
         dto.profilePictureUrl !== undefined
-          ? dto.profilePictureUrl || null
+          ? dto.profilePictureUrl &&
+            (dto.profilePictureUrl.startsWith("avatars/") ||
+              dto.profilePictureUrl.startsWith("http://") ||
+              dto.profilePictureUrl.startsWith("https://"))
+            ? dto.profilePictureUrl.startsWith("http")
+              ? profile.profilePictureUrl
+              : dto.profilePictureUrl
+            : null
           : profile.profilePictureUrl,
       preferredGlucoseUnit:
         dto.preferredGlucoseUnit ?? profile.preferredGlucoseUnit ?? "mg/dL",

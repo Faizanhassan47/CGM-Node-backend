@@ -64,7 +64,15 @@ export function databaseConfig(connectionString: string): TypeOrmModuleOptions {
           waitForConnections: true,
           connectionLimit: 20,
           ...(sslMode && sslMode !== 'none' && sslMode !== 'disabled'
-              ? { ssl: { rejectUnauthorized: sslMode === 'verifyca' || sslMode === 'verifyfull' } }
+              ? {
+                  ssl: {
+                    // Prefer verified TLS; allow insecure only when SslMode=required/prefer without verify*.
+                    rejectUnauthorized:
+                      sslMode === 'verifyca' ||
+                      sslMode === 'verifyfull' ||
+                      process.env.DB_SSL_REJECT_UNAUTHORIZED === 'true',
+                  },
+                }
               : {}),
         },
   };

@@ -210,7 +210,10 @@ bootstrap().catch((error: unknown) => {
   const message =
     error instanceof Error ? error.message : String(error);
 
-  startupFailure = message;
+  startupFailure =
+    process.env.NODE_ENV === 'production'
+      ? 'Service unavailable'
+      : message;
   logger.error(
     'Application startup failed',
     error instanceof Error ? error.stack : String(error),
