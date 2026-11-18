@@ -1,4 +1,5 @@
 import { Injectable, RequestTimeoutException, ServiceUnavailableException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 
 export type QueueLane = 'light' | 'heavy';
 
@@ -18,16 +19,38 @@ export type QueueSnapshot = {
   depth: number;
 };
 
+function intEnv(config: ConfigService, key: string, fallback: number, min: number, max: number): number {
+  const raw = Number(config.get<string | number>(key) ?? fallback);
+  if (!Number.isFinite(raw)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(raw)));
+}
+
 /**
  * Dual in-process queues so auth/light traffic is not blocked by sync-bulk/AI.
- * HTTP work gets an AbortSignal and times out; background jobs do not.
+ * Limits are env-tunable for capacity changes without code edits.
  */
 @Injectable()
 export class ApiQueueService {
-  private readonly lanes: Record<QueueLane, LaneState> = {
-    light: { active: 0, limit: 12, maxWaiting: 80, timeoutMs: 10_000, waiting: [] },
-    heavy: { active: 0, limit: 4, maxWaiting: 24, timeoutMs: 25_000, waiting: [] },
-  };
+  private readonly lanes: Record<QueueLane, LaneState>;
+
+  constructor(config: ConfigService) {
+    this.lanes = {
+      light: {
+        active: 0,
+        limit: intEnv(config, 'API_QUEUE_LIGHT_LIMIT', 16, 4, 64),
+        maxWaiting: intEnv(config, 'API_QUEUE_LIGHT_WAIT', 100, 10, 500),
+        timeoutMs: intEnv(config, 'API_QUEUE_LIGHT_TIMEOUT_MS', 10_000, 3_000, 60_000),
+        waiting: [],
+      },
+      heavy: {
+        active: 0,
+        limit: intEnv(config, 'API_QUEUE_HEAVY_LIMIT', 8, 2, 32),
+        maxWaiting: intEnv(config, 'API_QUEUE_HEAVY_WAIT', 40, 8, 200),
+        timeoutMs: intEnv(config, 'API_QUEUE_HEAVY_TIMEOUT_MS', 25_000, 5_000, 120_000),
+        waiting: [],
+      },
+    };
+  }
 
   get depth(): number {
     return this.lanes.light.waiting.length + this.lanes.heavy.waiting.length;

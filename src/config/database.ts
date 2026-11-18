@@ -62,7 +62,10 @@ export function databaseConfig(connectionString: string): TypeOrmModuleOptions {
           enableKeepAlive: true,
           keepAliveInitialDelay: 10000,
           waitForConnections: true,
-          connectionLimit: 20,
+          connectionLimit: (() => {
+            const raw = Number(process.env.DB_POOL_LIMIT ?? 25);
+            return Number.isFinite(raw) ? Math.min(50, Math.max(5, Math.floor(raw))) : 25;
+          })(),
           ...(sslMode && sslMode !== 'none' && sslMode !== 'disabled'
               ? {
                   ssl: {

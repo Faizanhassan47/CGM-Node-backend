@@ -17,6 +17,13 @@ class Environment {
   @IsOptional() @IsString() TRUST_PROXY?: string;
   @IsOptional() @IsString() RUN_SCHEDULED_WORKERS?: string;
   @IsOptional() @IsString() WORKER_ONLY?: string;
+  @IsOptional() @IsString() API_QUEUE_LIGHT_LIMIT?: string;
+  @IsOptional() @IsString() API_QUEUE_HEAVY_LIMIT?: string;
+  @IsOptional() @IsString() API_QUEUE_LIGHT_WAIT?: string;
+  @IsOptional() @IsString() API_QUEUE_HEAVY_WAIT?: string;
+  @IsOptional() @IsString() API_QUEUE_LIGHT_TIMEOUT_MS?: string;
+  @IsOptional() @IsString() API_QUEUE_HEAVY_TIMEOUT_MS?: string;
+  @IsOptional() @IsString() DB_POOL_LIMIT?: string;
   @IsOptional() @IsString() OPENAI_API_KEY?: string;
   @IsOptional() @IsString() OPENAI_MODEL?: string;
   @IsOptional() @IsString() IDRIVE_ENDPOINT?: string;
