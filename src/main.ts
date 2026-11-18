@@ -29,7 +29,33 @@ if (process.env.DB_CONNECTION_STRING) {
   }
 }
 
+const workerOnly = process.env.WORKER_ONLY === 'true';
+let workerReady = false;
+
 const httpServer = createServer((req, res) => {
+  // Dedicated worker keeps a tiny health surface so Hostinger/process managers
+  // see a listening PORT without exposing the full API.
+  if (workerOnly) {
+    const path = (req.url ?? '').split('?')[0];
+    if (req.method === 'GET' && (path === '/' || path === '/health' || path === '/health/live')) {
+      res.statusCode = workerReady ? 200 : 503;
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.end(
+        JSON.stringify({
+          status: workerReady ? 'Healthy' : 'Starting',
+          role: 'worker',
+          instanceId: process.env.INSTANCE_ID ?? 'worker',
+          timestamp: new Date().toISOString(),
+        }),
+      );
+      return;
+    }
+    res.statusCode = 404;
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.end(JSON.stringify({ message: 'Worker process; API routes are not served here.' }));
+    return;
+  }
+
   if (nestHandler) {
     nestHandler(req, res);
     return;
@@ -38,18 +64,21 @@ const httpServer = createServer((req, res) => {
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
   res.end(startupFailure ? `Startup failed: ${startupFailure}` : 'Starting');
 });
-if (process.env.WORKER_ONLY !== 'true' && Number.isInteger(listenPort) && listenPort >= 1 && listenPort <= 65535) {
+if (Number.isInteger(listenPort) && listenPort >= 1 && listenPort <= 65535) {
   httpServer.listen(listenPort, '0.0.0.0');
 }
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
 
-  if (process.env.WORKER_ONLY === 'true') {
+  if (workerOnly) {
     const { NestFactory } = await import('@nestjs/core');
     const worker = await NestFactory.createApplicationContext(AppModule, { bufferLogs: true });
     worker.enableShutdownHooks();
-    logger.log('Worker process started. HTTP is off. Set RUN_SCHEDULED_WORKERS=false on the API process.');
+    workerReady = true;
+    logger.log(
+      `Worker process ready on :${listenPort} (health only). Set RUN_SCHEDULED_WORKERS=false on API nodes.`,
+    );
     return;
   }
 
