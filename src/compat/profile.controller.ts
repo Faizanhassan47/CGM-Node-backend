@@ -69,6 +69,56 @@ export class ProfileController {
     return { user, profile };
   }
 
+  private async readUploadBuffer(file?: {
+    buffer?: Buffer;
+    path?: string;
+  }): Promise<Buffer | null> {
+    if (file?.buffer?.length) return file.buffer;
+    if (file?.path) {
+      const fs = await import("fs/promises");
+      return fs.readFile(file.path);
+    }
+    return null;
+  }
+
+  /** Accept image/* or sniff when clients send application/octet-stream. */
+  private resolveImageMime(
+    mimetype: string | undefined,
+    originalname: string | undefined,
+    buffer: Buffer,
+  ): "image/jpeg" | "image/png" | "image/webp" | null {
+    const mime = (mimetype || "").toLowerCase();
+    if (mime === "image/jpeg" || mime === "image/jpg") return "image/jpeg";
+    if (mime === "image/png") return "image/png";
+    if (mime === "image/webp") return "image/webp";
+
+    const name = (originalname || "").toLowerCase();
+    if (name.endsWith(".png")) return "image/png";
+    if (name.endsWith(".webp")) return "image/webp";
+    if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
+
+    if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+      return "image/jpeg";
+    }
+    if (
+      buffer.length >= 8 &&
+      buffer[0] === 0x89 &&
+      buffer[1] === 0x50 &&
+      buffer[2] === 0x4e &&
+      buffer[3] === 0x47
+    ) {
+      return "image/png";
+    }
+    if (
+      buffer.length >= 12 &&
+      buffer.toString("ascii", 0, 4) === "RIFF" &&
+      buffer.toString("ascii", 8, 12) === "WEBP"
+    ) {
+      return "image/webp";
+    }
+    return null;
+  }
+
   private async view(user: User, p: PatientProfile) {
     return {
       fullName: user.fullName,
@@ -106,25 +156,26 @@ export class ProfileController {
   )
   async uploadPicture(
     @CurrentUser() u: AuthUser,
-    @UploadedFile() file?: { buffer: Buffer; mimetype: string; originalname: string },
+    @UploadedFile() file?: {
+      buffer?: Buffer;
+      mimetype?: string;
+      originalname?: string;
+      path?: string;
+    },
   ) {
-    if (!file || !file.buffer) {
+    const buffer = await this.readUploadBuffer(file);
+    if (!buffer?.length) {
       throw new BadRequestException({ message: "No file provided for upload." });
     }
-    const allowed = new Set(["image/jpeg", "image/png", "image/webp"]);
-    if (!allowed.has((file.mimetype || "").toLowerCase())) {
+    const mime = this.resolveImageMime(file?.mimetype, file?.originalname, buffer);
+    if (!mime) {
       throw new BadRequestException({
         message: "Only JPEG, PNG, or WebP images are allowed.",
       });
     }
-    const ext =
-      file.mimetype === "image/png"
-        ? "png"
-        : file.mimetype === "image/webp"
-          ? "webp"
-          : "jpg";
+    const ext = mime === "image/png" ? "png" : mime === "image/webp" ? "webp" : "jpg";
     const key = `avatars/user_${u.sub}_${Date.now()}.${ext}`;
-    const pictureKey = await this.storage.uploadFile(key, file.buffer, file.mimetype);
+    const pictureKey = await this.storage.uploadFile(key, buffer, mime);
 
     const { user, profile } = await this.get(u.sub);
     profile.profilePictureUrl = pictureKey;
