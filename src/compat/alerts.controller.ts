@@ -8,10 +8,20 @@ class RuleDto { @IsString() alertType!: string; @IsOptional() @IsNumber() minimu
 export class AlertsController {
   constructor(private db: DataSource) {}
   private q(sql: string, params?: unknown[]) { return this.db.query(normalizeSql(sql, this.db), params); }
-  @Get() async list(@CurrentUser() u: AuthUser, @Query('severity') severity?: string, @Query('unreadOnly') unread?: string) {
+  @Get() async list(
+    @CurrentUser() u: AuthUser,
+    @Query('severity') severity?: string,
+    @Query('unreadOnly') unread?: string,
+    @Query('page') pageText = '1',
+    @Query('pageSize') sizeText = '30',
+  ) {
     if (this.db.options.type === 'mysql') {
       await this.q(`CREATE TABLE IF NOT EXISTS UserAlertClears (UserId INT PRIMARY KEY, ClearedAt DATETIME NOT NULL)`);
     }
+    const page = Math.max(1, Number(pageText) || 1);
+    const pageSize = Math.min(100, Math.max(1, Number(sizeText) || 30));
+    const offset = (page - 1) * pageSize;
+
     // Alerts created for the patient may not have an AlertRecipients row
     // (for example legacy rows or family notifications). Include those rows
     // while keeping all activity scoped to the authenticated user.
@@ -30,7 +40,21 @@ export class AlertsController {
     if (unread === 'true') sql += ' WHERE isRead=0 AND timestamp > COALESCE((SELECT ClearedAt FROM UserAlertClears WHERE UserId=?), \'1970-01-01\')';
     else sql += ' WHERE timestamp > COALESCE((SELECT ClearedAt FROM UserAlertClears WHERE UserId=?), \'1970-01-01\')';
     args.push(u.sub);
-    return this.q(`${sql} ORDER BY timestamp DESC LIMIT 50`, args);
+
+    const countRows = await this.q(`SELECT COUNT(*) AS totalCount FROM (${sql}) counted`, args);
+    const totalCount = Number(countRows[0]?.totalCount ?? countRows[0]?.TotalCount ?? 0);
+    const items = await this.q(
+      `${sql} ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
+      [...args, pageSize, offset],
+    );
+    return {
+      items,
+      page,
+      pageSize,
+      totalCount,
+      totalPages: Math.max(1, Math.ceil(totalCount / pageSize)),
+      hasMore: page * pageSize < totalCount,
+    };
   }
   @Delete('history') async clearHistory(@CurrentUser() u: AuthUser) {
     if (this.db.options.type === 'mysql') {

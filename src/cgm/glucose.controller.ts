@@ -214,35 +214,173 @@ export class GlucoseController {
       acknowledgedSequenceNumbers: [...new Set(acknowledged)],
     };
   }
-  @Get('history') async history(@CurrentUser() u: AuthUser, @Query('sensorId') sensorId?: string, @Query('hours') hours = '24', @Query('startUtc') startUtc?: string, @Query('endUtc') endUtc?: string, @Query('page') pageText = '1', @Query('pageSize') sizeText = '1000') { const page = Math.max(1, Number(pageText)); const pageSize = Math.min(1000, Math.max(1, Number(sizeText))); const start = startUtc ? new Date(startUtc) : new Date(Date.now() - Number(hours) * 3_600_000); const time = endUtc ? Between(start, new Date(endUtc)) : MoreThanOrEqual(start); const where: FindOptionsWhere<GlucoseMeasurement> = { userId: u.sub, measurementTime: time }; if (sensorId) where.sensorId = Number(sensorId); const [items, totalCount] = await this.readings.findAndCount({ where, order: { measurementTime: 'DESC' }, skip: (page - 1) * pageSize, take: pageSize }); return { items, page, pageSize, totalCount, totalPages: Math.ceil(totalCount / pageSize) }; }
-  @Get('summary')
-  async summary(@CurrentUser() u: AuthUser, @Query('sensorId') sensorId?: string) {
+  private resolveRange(query: {
+    hours?: string;
+    days?: string;
+    startUtc?: string;
+    endUtc?: string;
+    startDate?: string;
+    endDate?: string;
+  }): { start: Date; end: Date } {
+    const endRaw = query.endUtc || query.endDate;
+    const startRaw = query.startUtc || query.startDate;
+    const end = endRaw ? new Date(endRaw) : new Date();
+    if (startRaw) return { start: new Date(startRaw), end };
+    if (query.hours != null && query.hours !== '') {
+      const hours = Math.max(1, Number(query.hours) || 24);
+      return { start: new Date(end.getTime() - hours * 3_600_000), end };
+    }
+    const days = Math.max(1, Number(query.days ?? '1') || 1);
+    return { start: new Date(end.getTime() - days * 86_400_000), end };
+  }
+
+  @Get('history')
+  async history(
+    @CurrentUser() u: AuthUser,
+    @Query('sensorId') sensorId?: string,
+    @Query('hours') hours?: string,
+    @Query('days') days?: string,
+    @Query('startUtc') startUtc?: string,
+    @Query('endUtc') endUtc?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('page') pageText = '1',
+    @Query('pageSize') sizeText = '300',
+    @Query('limit') limitText?: string,
+  ) {
+    const page = Math.max(1, Number(pageText) || 1);
+    const requested = Number(sizeText || limitText || 300) || 300;
+    const pageSize = Math.min(1000, Math.max(1, requested));
+    const { start, end } = this.resolveRange({ hours, days, startUtc, endUtc, startDate, endDate });
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
+      throw new BadRequestException('Invalid history time range.');
+    }
+
     const where: FindOptionsWhere<GlucoseMeasurement> = {
       userId: u.sub,
-      measurementTime: MoreThanOrEqual(new Date(Date.now() - 86_400_000)),
+      measurementTime: Between(start, end),
     };
     if (sensorId) where.sensorId = Number(sensorId);
-    const rows = await this.readings.find({ where, order: { measurementTime: 'DESC' } });
-    if (!rows.length) {
+
+    const [rows, totalCount] = await this.readings.findAndCount({
+      where,
+      order: { measurementTime: 'DESC' },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+    });
+
+    const items = rows.map((r) => ({
+      sensorId: r.sensorId,
+      measurementTime: r.measurementTime,
+      glucoseValue: r.glucoseValue == null ? null : Number(r.glucoseValue),
+      sequenceNumber: r.sequenceNumber,
+      batteryVoltageMv: r.batteryVoltageMv,
+      deviceTemperatureC:
+        r.deviceTemperatureC == null ? null : Number(r.deviceTemperatureC),
+      we1CurrentNa: r.we1CurrentNa == null ? null : Number(r.we1CurrentNa),
+    }));
+
+    return {
+      items,
+      page,
+      pageSize,
+      totalCount,
+      totalPages: Math.max(1, Math.ceil(totalCount / pageSize)),
+      startUtc: start.toISOString(),
+      endUtc: end.toISOString(),
+      hasMore: page * pageSize < totalCount,
+    };
+  }
+
+  @Get('summary')
+  async summary(
+    @CurrentUser() u: AuthUser,
+    @Query('sensorId') sensorId?: string,
+    @Query('hours') hours?: string,
+    @Query('days') days = '1',
+    @Query('startUtc') startUtc?: string,
+    @Query('endUtc') endUtc?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+  ) {
+    const { start, end } = this.resolveRange({ hours, days, startUtc, endUtc, startDate, endDate });
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
+      throw new BadRequestException('Invalid summary time range.');
+    }
+
+    const params: unknown[] = [u.sub, start, end];
+    let sensorClause = '';
+    if (sensorId) {
+      sensorClause = ' AND SensorId=?';
+      params.push(Number(sensorId));
+    }
+
+    const [agg] = await this.q(
+      `SELECT COUNT(*) readingCount,
+              AVG(GlucoseValue) averageGlucose,
+              MIN(GlucoseValue) lowestGlucose,
+              MAX(GlucoseValue) highestGlucose,
+              MAX(MeasurementTime) lastUpdated
+       FROM GlucoseMeasurements
+       WHERE UserId=? AND MeasurementTime>=? AND MeasurementTime<=? AND GlucoseValue IS NOT NULL${sensorClause}`,
+      params,
+    );
+
+    const readingCount = Number(agg?.readingCount ?? agg?.ReadingCount ?? 0);
+    if (!readingCount) {
       return {
         currentGlucose: null,
         averageGlucose: null,
         lowestGlucose: null,
         highestGlucose: null,
         timeInRangePercentage: null,
+        readingCount: 0,
         lastUpdated: null,
         hasData: false,
+        startUtc: start.toISOString(),
+        endUtc: end.toISOString(),
       };
     }
-    const values = rows.map((r) => Number(r.glucoseValue)).filter(Number.isFinite);
+
+    const profile = await this.q(
+      'SELECT TargetLow, TargetHigh FROM PatientProfile WHERE UserId=?',
+      [u.sub],
+    );
+    const low = Number(profile[0]?.TargetLow ?? profile[0]?.targetLow ?? 70);
+    const high = Number(profile[0]?.TargetHigh ?? profile[0]?.targetHigh ?? 180);
+    const tirParams = [...params, low, high];
+    const [tir] = await this.q(
+      `SELECT COUNT(*) inRange
+       FROM GlucoseMeasurements
+       WHERE UserId=? AND MeasurementTime>=? AND MeasurementTime<=? AND GlucoseValue IS NOT NULL${sensorClause}
+         AND GlucoseValue>=? AND GlucoseValue<=?`,
+      tirParams,
+    );
+    const inRange = Number(tir?.inRange ?? tir?.InRange ?? 0);
+
+    const latestWhere: FindOptionsWhere<GlucoseMeasurement> = {
+      userId: u.sub,
+      measurementTime: Between(start, end),
+    };
+    if (sensorId) latestWhere.sensorId = Number(sensorId);
+    const latest = await this.readings.findOne({
+      where: latestWhere,
+      order: { measurementTime: 'DESC' },
+    });
+
     return {
-      currentGlucose: Number(rows[0].glucoseValue),
-      averageGlucose: values.length ? Math.round(values.reduce((a, b) => a + b, 0) / values.length) : null,
-      lowestGlucose: values.length ? Math.min(...values) : null,
-      highestGlucose: values.length ? Math.max(...values) : null,
-      timeInRangePercentage: values.length ? Math.round(values.filter((v) => v >= 70 && v <= 180).length / values.length * 1000) / 10 : null,
-      lastUpdated: rows[0].measurementTime,
+      currentGlucose: latest?.glucoseValue == null ? null : Number(latest.glucoseValue),
+      averageGlucose: Math.round(Number(agg.averageGlucose ?? agg.AverageGlucose)),
+      lowestGlucose: Math.round(Number(agg.lowestGlucose ?? agg.LowestGlucose)),
+      highestGlucose: Math.round(Number(agg.highestGlucose ?? agg.HighestGlucose)),
+      timeInRangePercentage: Math.round((inRange / readingCount) * 1000) / 10,
+      readingCount,
+      targetLow: low,
+      targetHigh: high,
+      lastUpdated: agg.lastUpdated ?? agg.LastUpdated ?? latest?.measurementTime ?? null,
       hasData: true,
+      startUtc: start.toISOString(),
+      endUtc: end.toISOString(),
     };
   }
 }
