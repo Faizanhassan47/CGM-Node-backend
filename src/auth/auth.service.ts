@@ -7,7 +7,8 @@ import {
 import { ConfigService } from "@nestjs/config";
 import { JwtService } from "@nestjs/jwt";
 import { InjectRepository } from "@nestjs/typeorm";
-import { pbkdf2Sync, randomBytes, timingSafeEqual } from "crypto";
+import { pbkdf2, randomBytes, timingSafeEqual } from "crypto";
+import { promisify } from "util";
 import { EntityManager, Repository } from "typeorm";
 import * as nodemailer from "nodemailer";
 import { PatientProfile, User } from "../database/entities";
@@ -27,6 +28,9 @@ import {
   buildWelcomeEmailHtml,
 } from "../common/email-template";
 
+const pbkdf2Async = promisify(pbkdf2);
+const PBKDF2_ITERATIONS = 100_000;
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -37,19 +41,26 @@ export class AuthService {
     private readonly config: ConfigService,
   ) {}
 
-  private hash(password: string) {
+  private async hash(password: string) {
     const salt = randomBytes(16);
-    return `${salt.toString("base64")}.${pbkdf2Sync(password, salt, 100_000, 32, "sha256").toString("base64")}`;
+    const derived = await pbkdf2Async(
+      password,
+      salt,
+      PBKDF2_ITERATIONS,
+      32,
+      "sha256",
+    );
+    return `${salt.toString("base64")}.${derived.toString("base64")}`;
   }
-  private verify(password: string, encoded: string | null) {
+  private async verify(password: string, encoded: string | null) {
     if (!encoded) return false;
     const [saltText, hashText, ...rest] = encoded.split(".");
     if (!saltText || !hashText || rest.length) return false;
     const expected = Buffer.from(hashText, "base64");
-    const actual = pbkdf2Sync(
+    const actual = await pbkdf2Async(
       password,
       Buffer.from(saltText, "base64"),
-      100_000,
+      PBKDF2_ITERATIONS,
       32,
       "sha256",
     );
@@ -94,26 +105,28 @@ export class AuthService {
   }
 
   private async response(user: User, deviceId?: string) {
-    const profile = await this.profiles.findOneBy({ userId: user.id });
     const common = { sub: String(user.id), device_id: deviceId ?? "unknown" };
     const accessMinutes = this.config.get<number>("JWT_EXPIRY_MINUTES") ?? 60;
     const refreshDays =
       this.config.get<number>("REFRESH_TOKEN_EXPIRY_DAYS") ?? 30;
-    const accessToken = await this.jwt.signAsync(
-      {
-        ...common,
-        email: user.email,
-        name: user.fullName,
-        auth_provider: user.authProvider,
-        role: "Patient",
-        token_version: user.tokenVersion,
-      },
-      { expiresIn: `${accessMinutes}m` },
-    );
-    const refreshToken = await this.jwt.signAsync(
-      { ...common, token_type: "refresh", token_version: user.tokenVersion },
-      { expiresIn: `${refreshDays}d` },
-    );
+    const [profile, accessToken, refreshToken] = await Promise.all([
+      this.profiles.findOneBy({ userId: user.id }),
+      this.jwt.signAsync(
+        {
+          ...common,
+          email: user.email,
+          name: user.fullName,
+          auth_provider: user.authProvider,
+          role: "Patient",
+          token_version: user.tokenVersion,
+        },
+        { expiresIn: `${accessMinutes}m` },
+      ),
+      this.jwt.signAsync(
+        { ...common, token_type: "refresh", token_version: user.tokenVersion },
+        { expiresIn: `${refreshDays}d` },
+      ),
+    ]);
     return {
       success: true,
       message: "Authentication successful.",
@@ -148,7 +161,7 @@ export class AuthService {
       this.users.create({
         fullName: dto.fullName.trim(),
         email,
-        passwordHash: this.hash(dto.password),
+        passwordHash: await this.hash(dto.password),
         authProvider: "Email",
         // Email/password accounts start unverified; Google social sets verified.
         emailVerified: false,
@@ -171,21 +184,17 @@ export class AuthService {
         createdAt: new Date(),
       }),
     );
-    try {
-      await this.sendWelcomeEmail(user.fullName, user.email, user.referralCode);
-    } catch (err: any) {
-      console.error(
-        `[AUTH] Failed to send welcome email to ${email}:`,
-        err?.message || err,
-      );
-    }
+    // Never block signup on SMTP — iPage timeouts were freezing the app spinner.
+    void this.sendWelcomeEmail(user.fullName, user.email, user.referralCode);
     return this.response(user);
   }
   async login(dto: LoginDto) {
     const user = await this.users.findOneBy({
       email: dto.email.trim().toLowerCase(),
     });
-    if (!user || !this.verify(dto.password, user.passwordHash)) {
+    const passwordOk =
+      !!user && (await this.verify(dto.password, user.passwordHash));
+    if (!user || !passwordOk) {
       throw new UnauthorizedException({
         message: "Invalid email or password.",
       });
@@ -199,7 +208,8 @@ export class AuthService {
     user.lastLoginAt = new Date();
     user.lastLoginDeviceId = dto.deviceId ?? null;
     user.lastLoginDeviceInfo = dto.deviceInfo ?? null;
-    await this.users.save(user);
+    // Don't block token return on the last-login write (remote MySQL is slow).
+    void this.users.save(user).catch(() => undefined);
     return this.response(user, dto.deviceId);
   }
   async refresh(dto: RefreshDto) {
@@ -234,12 +244,12 @@ export class AuthService {
     if (
       !isSettingFirstPassword &&
       (!dto.currentPassword ||
-        !this.verify(dto.currentPassword, user.passwordHash))
+        !(await this.verify(dto.currentPassword, user.passwordHash)))
     )
       throw new BadRequestException({
         message: "Current password is incorrect.",
       });
-    user.passwordHash = this.hash(dto.newPassword);
+    user.passwordHash = await this.hash(dto.newPassword);
     user.tokenVersion += 1;
     await this.users.save(user);
     return {
@@ -515,7 +525,9 @@ export class AuthService {
               : true,
         servername: this.config.get<string>("SMTP_TLS_SERVERNAME") || host,
       },
-      connectionTimeout: 15000,
+      connectionTimeout: 8_000,
+      greetingTimeout: 8_000,
+      socketTimeout: 12_000,
     });
   }
 
@@ -685,7 +697,7 @@ export class AuthService {
         success: false,
         message: "User not found.",
       });
-    user.passwordHash = this.hash(dto.newPassword);
+    user.passwordHash = await this.hash(dto.newPassword);
     user.tokenVersion += 1;
     await this.users.save(user);
     await this.users.manager.query(
