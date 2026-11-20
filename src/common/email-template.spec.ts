@@ -13,6 +13,7 @@ describe("Circle email templates", () => {
     expect(html).toContain("Circle");
     expect(html).toContain("#FF5A43");
     expect(html).toContain("123456");
+    expect(html).toContain('cid:circle-mark');
     expect(html).toContain("patient+&lt;unsafe&gt;@example.com");
     expect(html).not.toContain("Aima");
   });

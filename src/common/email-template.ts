@@ -1,4 +1,4 @@
-import { CIRCLE_MARK_PNG_BASE64 } from "./circle-logo-base64";
+import { CIRCLE_LOGO_CID } from "./email-logo";
 
 /** Email-safe Circle templates using table layouts and inline styles. */
 function escapeHtml(value: string): string {
@@ -10,6 +10,18 @@ function escapeHtml(value: string): string {
     '"': "&quot;",
   };
   return value.replace(/[&<>'"]/g, (character) => entities[character]);
+}
+
+/** Centered white circle badge with the Circle mark (CID inline image). */
+function logoBadgeHtml(): string {
+  return `
+              <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center" style="margin:0 auto;">
+                <tr>
+                  <td align="center" valign="middle" width="76" height="76" style="width:76px;height:76px;background-color:#FFFFFF;border-radius:38px;text-align:center;vertical-align:middle;line-height:76px;">
+                    <img src="cid:${CIRCLE_LOGO_CID}" alt="Circle" width="52" height="52" style="display:inline-block;width:52px;height:52px;border:0;outline:none;text-decoration:none;vertical-align:middle;" />
+                  </td>
+                </tr>
+              </table>`;
 }
 
 function emailShell(params: {
@@ -36,13 +48,7 @@ function emailShell(params: {
         <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:560px;background-color:#FFFFFF;border:1px solid #F0E7E4;border-radius:16px;overflow:hidden;box-shadow:0 6px 24px rgba(29,27,26,0.08);">
           <tr>
             <td align="center" style="background-color:#FF5A43;padding:30px 24px;">
-              <table role="presentation" cellspacing="0" cellpadding="0" border="0">
-                <tr>
-                  <td align="center" valign="middle" style="width:72px;height:72px;background-color:#FFFFFF;border-radius:36px;padding:6px;box-sizing:border-box;">
-                    <img src="${CIRCLE_MARK_PNG_BASE64}" alt="Circle" width="56" height="56" style="display:block;width:56px;height:56px;border-radius:28px;object-fit:contain;margin:0 auto;" />
-                  </td>
-                </tr>
-              </table>
+${logoBadgeHtml()}
               <h1 style="margin:16px 0 6px;color:#FFFFFF;font-size:24px;line-height:1.25;font-weight:750;letter-spacing:-0.3px;">${params.title}</h1>
               <p style="margin:0;color:#FFF3F0;font-size:13px;line-height:1.5;">${params.subtitle}</p>
             </td>

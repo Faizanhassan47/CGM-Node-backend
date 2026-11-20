@@ -28,6 +28,7 @@ import {
   buildPasswordResetEmailHtml,
   buildWelcomeEmailHtml,
 } from "../common/email-template";
+import { circleLogoAttachment } from "../common/email-logo";
 
 const pbkdf2Async = promisify(pbkdf2);
 const PBKDF2_ITERATIONS = 100_000;
@@ -188,6 +189,7 @@ export class AuthService {
 
     try {
       const transporter = this.getMailTransporter();
+      const logo = circleLogoAttachment();
       await transporter.sendMail({
         from: `"${fromName}" <${fromEmail}>`,
         to: email,
@@ -199,6 +201,7 @@ export class AuthService {
           fullName,
           expiresInMinutes: 15,
         }),
+        attachments: logo ? [logo] : [],
       });
       console.log(`[AUTH] Verification email delivered to ${email}`);
     } catch (err: any) {
@@ -731,6 +734,7 @@ export class AuthService {
 
     try {
       const transporter = this.getMailTransporter();
+      const logo = circleLogoAttachment();
       await transporter.sendMail({
         from: `"${fromName}" <${fromEmail}>`,
         to: email,
@@ -741,6 +745,7 @@ export class AuthService {
           recipientEmail: email,
           familyCode: activeCode,
         }),
+        attachments: logo ? [logo] : [],
       });
       console.log(
         `[WELCOME EMAIL] Welcome email successfully delivered to ${email}`,
@@ -762,6 +767,7 @@ export class AuthService {
 
     try {
       const transporter = this.getMailTransporter();
+      const logo = circleLogoAttachment();
       await transporter.sendMail({
         from: `"${fromName}" <${fromEmail}>`,
         to: email,
@@ -772,6 +778,7 @@ export class AuthService {
           recipientEmail: email,
           expiresInMinutes: 15,
         }),
+        attachments: logo ? [logo] : [],
       });
       console.log(`[PASSWORD RESET] Email successfully sent to ${email}`);
     } catch (err: any) {
