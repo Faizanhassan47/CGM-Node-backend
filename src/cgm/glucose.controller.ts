@@ -1,6 +1,6 @@
 import { BadRequestException, Body, Controller, Get, Logger, NotFoundException, Post, Query } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Between, DataSource, FindOptionsWhere, MoreThanOrEqual, Not, Repository } from 'typeorm';
+import { Between, DataSource, FindOptionsWhere, Not, Repository } from 'typeorm';
 import { AuthUser, CurrentUser } from '../common/auth-user';
 import { GlucoseMeasurement, Sensor } from '../database/entities';
 import { BulkSyncDto, MeasurementDto } from './cgm.dto';
@@ -113,6 +113,15 @@ export class GlucoseController {
   }
   private validate(s: Sensor, d: MeasurementDto) { const time = new Date(d.measurementTime); if (!s.isActive || ['Expired', 'Stopped'].includes(s.status)) return 'The sensor session is not active.'; if (!s.activatedAt || time < s.activatedAt) return 'Warm-up measurements cannot be uploaded as glucose readings.'; if (s.expiresAt && time > s.expiresAt) return 'The measurement occurred after the sensor expired.'; if (time > new Date(Date.now() + 300_000)) return 'The measurement timestamp is in the future.'; return null; }
   private entity(userId: number, s: Sensor, d: MeasurementDto) { return this.readings.create({ userId, sensorId: s.id, deviceId: s.deviceId, sequenceNumber: d.sequenceNumber ?? null, glucoseValue: String(d.glucoseValue), measurementTime: new Date(d.measurementTime), batteryVoltageMv: d.batteryVoltageMv ?? null, deviceTemperatureC: d.deviceTemperatureC == null ? null : String(d.deviceTemperatureC), we1CurrentNa: d.we1CurrentNa == null ? null : String(d.we1CurrentNa), isSynced: true, createdAt: new Date() }); }
+  private applyReading(row: GlucoseMeasurement, s: Sensor, d: MeasurementDto) {
+    row.deviceId = s.deviceId;
+    row.sequenceNumber = d.sequenceNumber ?? row.sequenceNumber;
+    row.glucoseValue = String(d.glucoseValue);
+    row.batteryVoltageMv = d.batteryVoltageMv ?? row.batteryVoltageMv;
+    row.deviceTemperatureC = d.deviceTemperatureC == null ? row.deviceTemperatureC : String(d.deviceTemperatureC);
+    row.we1CurrentNa = d.we1CurrentNa == null ? row.we1CurrentNa : String(d.we1CurrentNa);
+    row.isSynced = true;
+  }
   private async sensor(id: number, userId: number) {
     const owned = await this.sensors.findOneBy({ id, userId });
     if (owned) return owned;
@@ -124,6 +133,9 @@ export class GlucoseController {
     return active;
   }
   @Post('measurement') async save(@CurrentUser() u: AuthUser, @Body() dto: MeasurementDto) {
+    if (dto.sensorId == null) {
+      throw new BadRequestException({ message: 'sensorId is required.' });
+    }
     const s = await this.sensor(dto.sensorId, u.sub);
     const error = this.validate(s, dto);
     if (error) throw new BadRequestException({ message: error });
@@ -134,6 +146,20 @@ export class GlucoseController {
     try {
       const duplicate = await runner.manager.findOne(GlucoseMeasurement, { where: { sensorId: s.id, measurementTime } });
       if (duplicate) {
+        const incomingSeq = dto.sequenceNumber ?? 0;
+        const existingSeq = duplicate.sequenceNumber ?? 0;
+        if (incomingSeq >= existingSeq) {
+          this.applyReading(duplicate, s, dto);
+          await runner.manager.save(GlucoseMeasurement, duplicate);
+          if (!s.lastReadingAt || measurementTime > s.lastReadingAt) {
+            s.lastReadingAt = measurementTime;
+            await runner.manager.save(Sensor, s);
+          }
+          await this.workers.enqueueDailySummary(u.sub, measurementTime.toISOString().slice(0, 10), runner);
+          await runner.commitTransaction();
+          void this.notify(u.sub, s.id, dto.glucoseValue, measurementTime);
+          return { message: 'Measurement updated.', measurementTime: dto.measurementTime };
+        }
         await runner.rollbackTransaction();
         return { message: 'Duplicate reading skipped.', measurementTime: dto.measurementTime };
       }
@@ -156,61 +182,119 @@ export class GlucoseController {
 
   @Post('sync-bulk') async bulk(@CurrentUser() u: AuthUser, @Body() dto: BulkSyncDto) {
     const s = await this.sensor(dto.sensorId, u.sub);
-    for (const d of dto.measurements) {
+    // Skip invalid rows instead of failing the whole batch — otherwise one
+    // warm-up / expired / future timestamp poisons the client's offline queue.
+    const accepted: MeasurementDto[] = [];
+    const skipped: Array<{ measurementTime?: string; reason: string }> = [];
+    for (const d of dto.measurements ?? []) {
       d.sensorId = dto.sensorId;
       const error = this.validate(s, d);
-      if (error) throw new BadRequestException({ message: error });
+      if (error) {
+        skipped.push({ measurementTime: d.measurementTime, reason: error });
+        continue;
+      }
+      if (
+        typeof d.glucoseValue !== 'number' ||
+        Number.isNaN(d.glucoseValue) ||
+        d.glucoseValue < 20 ||
+        d.glucoseValue > 600
+      ) {
+        skipped.push({
+          measurementTime: d.measurementTime,
+          reason: 'glucoseValue out of range (expected mg/dL 20-600).',
+        });
+        continue;
+      }
+      accepted.push(d);
     }
+
     // De-duplicate inside the request first. The database primary key on
     // (SensorId, MeasurementTime) remains the concurrency boundary for
     // overlapping uploads.
     const uniqueMeasurements = [...new Map(
-      dto.measurements.map((measurement) => [
+      accepted.map((measurement) => [
         new Date(measurement.measurementTime).getTime(),
         measurement,
       ]),
     ).values()];
     let inserted = 0;
+    let duplicates = 0;
     const acknowledged: number[] = [];
     const affectedDates = new Set<string>();
     const insertedRows: Array<{ value: number; time: Date }> = [];
-    const runner = this.db.createQueryRunner();
-    await runner.connect();
-    await runner.startTransaction();
-    try {
-      for (const d of uniqueMeasurements) {
-        const measurementTime = new Date(d.measurementTime);
-        const duplicate = await runner.manager.findOne(GlucoseMeasurement, { where: { sensorId: s.id, measurementTime } });
-        if (duplicate) continue;
-        try {
-          await runner.manager.save(GlucoseMeasurement, this.entity(u.sub, s, d));
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          if (/duplicate|primary key|unique/i.test(message)) continue;
-          throw error;
+    if (uniqueMeasurements.length > 0) {
+      const runner = this.db.createQueryRunner();
+      await runner.connect();
+      await runner.startTransaction();
+      try {
+        for (const d of uniqueMeasurements) {
+          const measurementTime = new Date(d.measurementTime);
+          const duplicate = await runner.manager.findOne(GlucoseMeasurement, {
+            where: { sensorId: s.id, measurementTime },
+          });
+          if (duplicate) {
+            const incomingSeq = d.sequenceNumber ?? 0;
+            const existingSeq = duplicate.sequenceNumber ?? 0;
+            if (incomingSeq >= existingSeq) {
+              this.applyReading(duplicate, s, d);
+              await runner.manager.save(GlucoseMeasurement, duplicate);
+              inserted++;
+              insertedRows.push({ value: d.glucoseValue, time: measurementTime });
+              affectedDates.add(measurementTime.toISOString().slice(0, 10));
+              if (!s.lastReadingAt || measurementTime > s.lastReadingAt) {
+                s.lastReadingAt = measurementTime;
+              }
+            } else {
+              duplicates++;
+            }
+            if (d.sequenceNumber != null) acknowledged.push(d.sequenceNumber);
+            continue;
+          }
+          try {
+            await runner.manager.save(GlucoseMeasurement, this.entity(u.sub, s, d));
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (/duplicate|primary key|unique/i.test(message)) {
+              duplicates++;
+              if (d.sequenceNumber != null) acknowledged.push(d.sequenceNumber);
+              continue;
+            }
+            throw error;
+          }
+          inserted++;
+          if (d.sequenceNumber != null) acknowledged.push(d.sequenceNumber);
+          affectedDates.add(measurementTime.toISOString().slice(0, 10));
+          insertedRows.push({ value: d.glucoseValue, time: measurementTime });
+          if (!s.lastReadingAt || measurementTime > s.lastReadingAt) {
+            s.lastReadingAt = measurementTime;
+          }
         }
-        inserted++;
-        if (d.sequenceNumber != null) acknowledged.push(d.sequenceNumber);
-        affectedDates.add(measurementTime.toISOString().slice(0, 10));
-        insertedRows.push({ value: d.glucoseValue, time: measurementTime });
-        if (!s.lastReadingAt || measurementTime > s.lastReadingAt) s.lastReadingAt = measurementTime;
+        if (inserted > 0) await runner.manager.save(Sensor, s);
+        for (const date of affectedDates) {
+          await this.workers.enqueueDailySummary(u.sub, date, runner);
+        }
+        await runner.commitTransaction();
+      } catch (e) {
+        await runner.rollbackTransaction();
+        throw e;
+      } finally {
+        await runner.release();
       }
-      if (inserted > 0) await runner.manager.save(Sensor, s);
-      for (const date of affectedDates) await this.workers.enqueueDailySummary(u.sub, date, runner);
-      await runner.commitTransaction();
-    } catch (e) {
-      await runner.rollbackTransaction();
-      throw e;
-    } finally {
-      await runner.release();
     }
-    if (inserted > 0) this.notifyInserted(u.sub, s.id, insertedRows).catch((err) => {
-      this.log.warn(`Bulk glucose alert notify failed: ${err instanceof Error ? err.message : err}`);
-    });
+
+    if (inserted > 0) {
+      this.notifyInserted(u.sub, s.id, insertedRows).catch((err) => {
+        this.log.warn(
+          `Bulk glucose alert notify failed: ${err instanceof Error ? err.message : err}`,
+        );
+      });
+    }
 
     return {
       insertedCount: inserted,
-      duplicateCount: dto.measurements.length - inserted,
+      duplicateCount: duplicates,
+      skippedCount: skipped.length,
+      skipped: skipped.slice(0, 20),
       acknowledgedSequenceNumbers: [...new Set(acknowledged)],
     };
   }
@@ -245,29 +329,49 @@ export class GlucoseController {
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
     @Query('page') pageText = '1',
-    @Query('pageSize') sizeText = '300',
+    @Query('pageSize') sizeText = '100',
     @Query('limit') limitText?: string,
+    @Query('minMg') minMgText?: string,
+    @Query('maxMg') maxMgText?: string,
   ) {
     const page = Math.max(1, Number(pageText) || 1);
-    const requested = Number(sizeText || limitText || 300) || 300;
-    const pageSize = Math.min(1000, Math.max(1, requested));
+    // Hard cap keeps payloads small for low-RAM phones (2GB class).
+    const requested = Number(sizeText || limitText || 100) || 100;
+    const pageSize = Math.min(250, Math.max(1, requested));
     const { start, end } = this.resolveRange({ hours, days, startUtc, endUtc, startDate, endDate });
     if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
       throw new BadRequestException('Invalid history time range.');
     }
 
-    const where: FindOptionsWhere<GlucoseMeasurement> = {
-      userId: u.sub,
-      measurementTime: Between(start, end),
-    };
-    if (sensorId) where.sensorId = Number(sensorId);
+    const minMg = minMgText != null && minMgText !== '' ? Number(minMgText) : null;
+    const maxMg = maxMgText != null && maxMgText !== '' ? Number(maxMgText) : null;
+    if ((minMg != null && Number.isNaN(minMg)) || (maxMg != null && Number.isNaN(maxMg))) {
+      throw new BadRequestException('Invalid minMg/maxMg filter.');
+    }
+    if (minMg != null && maxMg != null && minMg > maxMg) {
+      throw new BadRequestException('minMg cannot exceed maxMg.');
+    }
 
-    const [rows, totalCount] = await this.readings.findAndCount({
-      where,
-      order: { measurementTime: 'DESC' },
-      skip: (page - 1) * pageSize,
-      take: pageSize,
-    });
+    const qb = this.readings
+      .createQueryBuilder('g')
+      .where('g.userId = :userId', { userId: u.sub })
+      .andWhere('g.measurementTime BETWEEN :start AND :end', { start, end });
+    if (sensorId) {
+      qb.andWhere('g.sensorId = :sensorId', { sensorId: Number(sensorId) });
+    }
+    if (minMg != null) {
+      qb.andWhere('CAST(g.glucoseValue AS DECIMAL(10,2)) >= :minMg', { minMg });
+    }
+    if (maxMg != null) {
+      qb.andWhere('CAST(g.glucoseValue AS DECIMAL(10,2)) <= :maxMg', { maxMg });
+    }
+
+    const totalCount = await qb.clone().getCount();
+    const rows = await qb
+      .orderBy('g.measurementTime', 'DESC')
+      .skip((page - 1) * pageSize)
+      .take(pageSize)
+      .getMany();
 
     const items = rows.map((r) => ({
       sensorId: r.sensorId,
@@ -289,6 +393,11 @@ export class GlucoseController {
       startUtc: start.toISOString(),
       endUtc: end.toISOString(),
       hasMore: page * pageSize < totalCount,
+      filters: {
+        sensorId: sensorId ? Number(sensorId) : null,
+        minMg,
+        maxMg,
+      },
     };
   }
 

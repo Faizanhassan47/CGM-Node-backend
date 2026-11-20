@@ -13,13 +13,15 @@ export class AlertsController {
     @Query('severity') severity?: string,
     @Query('unreadOnly') unread?: string,
     @Query('page') pageText = '1',
-    @Query('pageSize') sizeText = '30',
+    @Query('pageSize') sizeText = '25',
+    @Query('alertType') alertType?: string,
   ) {
     if (this.db.options.type === 'mysql') {
       await this.q(`CREATE TABLE IF NOT EXISTS UserAlertClears (UserId INT PRIMARY KEY, ClearedAt DATETIME NOT NULL)`);
     }
     const page = Math.max(1, Number(pageText) || 1);
-    const pageSize = Math.min(100, Math.max(1, Number(sizeText) || 30));
+    // Smaller pages for low-end clients; hard-cap at 50.
+    const pageSize = Math.min(50, Math.max(1, Number(sizeText) || 25));
     const offset = (page - 1) * pageSize;
 
     // Alerts created for the patient may not have an AlertRecipients row
@@ -34,9 +36,11 @@ export class AlertsController {
       LEFT JOIN AlertRecipients r ON a.Id=r.AlertId AND r.UserId=?
       WHERE (a.UserId=? OR r.UserId IS NOT NULL)
       ${severity ? 'AND a.Severity=?' : ''}
+      ${alertType ? 'AND a.AlertType=?' : ''}
     ) activity`;
     const args: unknown[] = [u.sub, u.sub];
     if (severity) args.push(severity);
+    if (alertType) args.push(alertType);
     if (unread === 'true') sql += ' WHERE isRead=0 AND timestamp > COALESCE((SELECT ClearedAt FROM UserAlertClears WHERE UserId=?), \'1970-01-01\')';
     else sql += ' WHERE timestamp > COALESCE((SELECT ClearedAt FROM UserAlertClears WHERE UserId=?), \'1970-01-01\')';
     args.push(u.sub);

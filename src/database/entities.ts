@@ -33,7 +33,7 @@ export class PatientProfile {
   @Column({ name: 'Language', default: 'English' }) language!: string;
   @Column({ name: 'Theme', default: 'System' }) theme!: string;
   @Column({ name: 'ProfileCompleted', default: false }) profileCompleted!: boolean;
-  @Column({ name: 'TargetLow', type: 'decimal', precision: 5, scale: 1, default: 90.0 }) targetLow!: number;
+  @Column({ name: 'TargetLow', type: 'decimal', precision: 5, scale: 1, default: 80.0 }) targetLow!: number;
   @Column({ name: 'TargetHigh', type: 'decimal', precision: 5, scale: 1, default: 130.0 }) targetHigh!: number;
   @Column({ name: 'UrgentLowThreshold', type: 'decimal', precision: 5, scale: 1, default: 55.0 }) urgentLowThreshold!: number;
   @Column({ name: 'UrgentHighThreshold', type: 'decimal', precision: 5, scale: 1, default: 250.0 }) urgentHighThreshold!: number;

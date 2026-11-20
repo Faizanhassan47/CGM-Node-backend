@@ -40,7 +40,7 @@ export async function ensureTablesExist(dataSource: DataSource): Promise<void> {
        Language NVARCHAR(50) NOT NULL DEFAULT 'English',
        Theme NVARCHAR(50) NOT NULL DEFAULT 'System',
        ProfileCompleted BIT NOT NULL DEFAULT 0,
-       TargetLow DECIMAL(5,1) NOT NULL DEFAULT 90.0,
+       TargetLow DECIMAL(5,1) NOT NULL DEFAULT 80.0,
        TargetHigh DECIMAL(5,1) NOT NULL DEFAULT 130.0,
        UrgentLowThreshold DECIMAL(5,1) NOT NULL DEFAULT 55.0,
        UrgentHighThreshold DECIMAL(5,1) NOT NULL DEFAULT 250.0,
@@ -313,7 +313,7 @@ export async function ensureTablesExist(dataSource: DataSource): Promise<void> {
      );`,
 
     `IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('PatientProfile') AND name = 'TargetLow')
-     ALTER TABLE PatientProfile ADD TargetLow DECIMAL(5,1) NOT NULL DEFAULT 90.0;`,
+     ALTER TABLE PatientProfile ADD TargetLow DECIMAL(5,1) NOT NULL DEFAULT 80.0;`,
 
     `IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('PatientProfile') AND name = 'TargetHigh')
      ALTER TABLE PatientProfile ADD TargetHigh DECIMAL(5,1) NOT NULL DEFAULT 130.0;`,
@@ -378,7 +378,7 @@ export async function ensureTablesExist(dataSource: DataSource): Promise<void> {
        Language VARCHAR(50) NOT NULL DEFAULT 'English',
        Theme VARCHAR(50) NOT NULL DEFAULT 'System',
        ProfileCompleted TINYINT(1) NOT NULL DEFAULT 0,
-       TargetLow DECIMAL(5,1) NOT NULL DEFAULT 90.0,
+       TargetLow DECIMAL(5,1) NOT NULL DEFAULT 80.0,
        TargetHigh DECIMAL(5,1) NOT NULL DEFAULT 130.0,
        UrgentLowThreshold DECIMAL(5,1) NOT NULL DEFAULT 55.0,
        UrgentHighThreshold DECIMAL(5,1) NOT NULL DEFAULT 250.0,

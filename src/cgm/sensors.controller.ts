@@ -8,8 +8,41 @@ import { StartSensorDto } from './cgm.dto';
 @Controller('api/Sensors')
 export class SensorsController {
   constructor(@InjectRepository(Sensor) private readonly sensors: Repository<Sensor>, @InjectRepository(CgmDevice) private readonly devices: Repository<CgmDevice>) {}
-  private view(s: Sensor) { return { id: s.id, deviceId: s.deviceId, sensorIdentifier: s.sensorIdentifier, status: s.status, startedAt: s.startedAt, activatedAt: s.activatedAt, expiresAt: s.expiresAt, endedAt: s.endedAt, lastReadingAt: s.lastReadingAt }; }
-  @Get('active') async active(@CurrentUser() u: AuthUser) { const s = await this.sensors.findOne({ where: { userId: u.sub, isActive: true, status: Not('Expired') }, order: { startedAt: 'DESC' } }); if (!s) throw new NotFoundException({ message: 'No active sensor found.' }); const now = new Date(); if (s.expiresAt && s.expiresAt <= now) { Object.assign(s, { status: 'Expired', isActive: false, endedAt: s.endedAt ?? s.expiresAt }); await this.sensors.save(s); throw new NotFoundException({ message: 'No active sensor found.' }); } s.status = s.activatedAt && s.activatedAt > now ? 'Warmup' : s.expiresAt && s.expiresAt <= new Date(now.getTime() + 86_400_000) ? 'EndingSoon' : 'Active'; await this.sensors.save(s); return this.view(s); }
+  private view(s: Sensor, extra: Record<string, unknown> = {}) {
+    const now = new Date();
+    const inWarmup = !!(s.activatedAt && s.activatedAt > now);
+    return {
+      id: s.id,
+      deviceId: s.deviceId,
+      sensorIdentifier: s.sensorIdentifier,
+      status: s.status,
+      startedAt: s.startedAt,
+      activatedAt: s.activatedAt,
+      expiresAt: s.expiresAt,
+      endedAt: s.endedAt,
+      lastReadingAt: s.lastReadingAt,
+      inWarmup,
+      warmupEndsAt: s.activatedAt,
+      ...extra,
+    };
+  }
+  @Get('active') async active(@CurrentUser() u: AuthUser) {
+    const s = await this.sensors.findOne({ where: { userId: u.sub, isActive: true, status: Not('Expired') }, order: { startedAt: 'DESC' } });
+    if (!s) throw new NotFoundException({ message: 'No active sensor found.' });
+    const now = new Date();
+    if (s.expiresAt && s.expiresAt <= now) {
+      Object.assign(s, { status: 'Expired', isActive: false, endedAt: s.endedAt ?? s.expiresAt });
+      await this.sensors.save(s);
+      throw new NotFoundException({ message: 'No active sensor found.' });
+    }
+    s.status = s.activatedAt && s.activatedAt > now
+      ? 'Warmup'
+      : s.expiresAt && s.expiresAt <= new Date(now.getTime() + 86_400_000)
+        ? 'EndingSoon'
+        : 'Active';
+    await this.sensors.save(s);
+    return this.view(s);
+  }
   @Post('start') async start(@CurrentUser() u: AuthUser, @Body() dto: StartSensorDto) {
     const d = await this.devices.findOneBy({ id: dto.deviceId, userId: u.sub, isActive: true });
     if (!d) throw new BadRequestException({ message: 'The selected device is not registered to this account.' });
@@ -30,10 +63,30 @@ export class SensorsController {
     const userActive = await this.sensors.findBy({ userId: u.sub, isActive: true });
     for (const s of userActive) Object.assign(s, { status: 'Expired', isActive: false, endedAt: new Date() });
     await this.sensors.save(userActive);
+
+    // Warmup only for a brand-new serial on this account.
+    // Reconnecting / rebinding a previously used serial skips the 2h heating UI.
+    const priorForUser = await this.sensors.findOne({
+      where: { userId: u.sub, sensorIdentifier: serial },
+      order: { startedAt: 'DESC' },
+    });
+    const isNewHardware = !priorForUser;
+    const requestedWarmup = dto.warmupMinutes ?? 120;
+    const warmupMinutes = isNewHardware ? Math.max(0, requestedWarmup) : 0;
+
     const startedAt = new Date();
-    const isImmediate = (dto.warmupMinutes ?? 5) === 0;
-    const sensor = await this.sensors.save(this.sensors.create({ userId: u.sub, deviceId: dto.deviceId, sensorIdentifier: serial, status: isImmediate ? 'Active' : 'Warmup', startedAt, activatedAt: isImmediate ? startedAt : new Date(startedAt.getTime() + dto.warmupMinutes * 60_000), expiresAt: new Date(startedAt.getTime() + 15 * 86_400_000), isActive: true }));
-    return this.view(sensor);
+    const isImmediate = warmupMinutes === 0;
+    const sensor = await this.sensors.save(this.sensors.create({
+      userId: u.sub,
+      deviceId: dto.deviceId,
+      sensorIdentifier: serial,
+      status: isImmediate ? 'Active' : 'Warmup',
+      startedAt,
+      activatedAt: isImmediate ? startedAt : new Date(startedAt.getTime() + warmupMinutes * 60_000),
+      expiresAt: new Date(startedAt.getTime() + 15 * 86_400_000),
+      isActive: true,
+    }));
+    return this.view(sensor, { isNewHardware, warmupMinutes });
   }
   @Post('stop') async stop(@CurrentUser() u: AuthUser) { const s = await this.sensors.findOne({ where: { userId: u.sub, isActive: true }, order: { startedAt: 'DESC' } }); if (!s) throw new NotFoundException({ message: 'No active sensor found.' }); Object.assign(s, { status: 'Stopped', isActive: false, endedAt: new Date() }); await this.sensors.save(s); }
 }

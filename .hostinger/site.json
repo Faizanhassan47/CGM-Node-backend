@@ -5,17 +5,6 @@
   "api": {
     "domain": "aima.gms-world.com",
     "instanceId": "api-1",
-    "role": "api"
-  },
-  "api2": {
-    "domain": "cgm-api2.gms-world.com",
-    "instanceId": "api-2",
-    "role": "api"
-  },
-  "worker": {
-    "domain": "cgm-worker.gms-world.com",
-    "instanceId": "worker-1",
-    "role": "worker",
-    "entryFile": "worker.js"
+    "role": "api-with-workers"
   }
 }

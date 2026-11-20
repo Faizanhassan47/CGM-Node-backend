@@ -133,7 +133,7 @@ export class ProfileController {
       profileCompleted: p.profileCompleted,
       theme: p.theme,
       language: p.language,
-      targetLow: Number(p.targetLow ?? 90.0),
+      targetLow: Number(p.targetLow ?? 80.0),
       targetHigh: Number(p.targetHigh ?? 130.0),
       urgentLowThreshold: Number(p.urgentLowThreshold ?? 55.0),
       urgentHighThreshold: Number(p.urgentHighThreshold ?? 250.0),
@@ -226,7 +226,7 @@ export class ProfileController {
       theme: dto.theme,
       language: dto.language,
       targetLow:
-        dto.targetLow != null ? dto.targetLow : (profile.targetLow ?? 90.0),
+        dto.targetLow != null ? dto.targetLow : (profile.targetLow ?? 80.0),
       targetHigh:
         dto.targetHigh != null ? dto.targetHigh : (profile.targetHigh ?? 130.0),
       urgentLowThreshold:
