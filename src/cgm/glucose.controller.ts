@@ -1,6 +1,6 @@
 import { BadRequestException, Body, Controller, Get, Logger, NotFoundException, Post, Query } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Between, DataSource, FindOptionsWhere, Not, Repository } from 'typeorm';
+import { Between, DataSource, FindOptionsWhere, Not, QueryRunner, Repository } from 'typeorm';
 import { AuthUser, CurrentUser } from '../common/auth-user';
 import { GlucoseMeasurement, Sensor } from '../database/entities';
 import { BulkSyncDto, MeasurementDto } from './cgm.dto';
@@ -122,6 +122,18 @@ export class GlucoseController {
     row.we1CurrentNa = d.we1CurrentNa == null ? row.we1CurrentNa : String(d.we1CurrentNa);
     row.isSynced = true;
   }
+  private exactSecond(iso: string) {
+    const time = new Date(iso);
+    return new Date(Math.floor(time.getTime() / 1000) * 1000);
+  }
+  private async findExisting(runner: QueryRunner, sensorId: number, d: MeasurementDto) {
+    const measurementTime = this.exactSecond(d.measurementTime);
+    let row = await runner.manager.findOne(GlucoseMeasurement, { where: { sensorId, measurementTime } });
+    if (!row && d.sequenceNumber != null) {
+      row = await runner.manager.findOne(GlucoseMeasurement, { where: { sensorId, sequenceNumber: d.sequenceNumber } });
+    }
+    return { row, measurementTime };
+  }
   private async sensor(id: number, userId: number) {
     const owned = await this.sensors.findOneBy({ id, userId });
     if (owned) return owned;
@@ -142,26 +154,21 @@ export class GlucoseController {
     const runner = this.db.createQueryRunner();
     await runner.connect();
     await runner.startTransaction();
+    dto.measurementTime = this.exactSecond(dto.measurementTime).toISOString();
     const measurementTime = new Date(dto.measurementTime);
     try {
-      const duplicate = await runner.manager.findOne(GlucoseMeasurement, { where: { sensorId: s.id, measurementTime } });
+      const { row: duplicate } = await this.findExisting(runner, s.id, dto);
       if (duplicate) {
-        const incomingSeq = dto.sequenceNumber ?? 0;
-        const existingSeq = duplicate.sequenceNumber ?? 0;
-        if (incomingSeq >= existingSeq) {
-          this.applyReading(duplicate, s, dto);
-          await runner.manager.save(GlucoseMeasurement, duplicate);
-          if (!s.lastReadingAt || measurementTime > s.lastReadingAt) {
-            s.lastReadingAt = measurementTime;
-            await runner.manager.save(Sensor, s);
-          }
-          await this.workers.enqueueDailySummary(u.sub, measurementTime.toISOString().slice(0, 10), runner);
-          await runner.commitTransaction();
-          void this.notify(u.sub, s.id, dto.glucoseValue, measurementTime);
-          return { message: 'Measurement updated.', measurementTime: dto.measurementTime };
+        this.applyReading(duplicate, s, dto);
+        await runner.manager.save(GlucoseMeasurement, duplicate);
+        if (!s.lastReadingAt || measurementTime > s.lastReadingAt) {
+          s.lastReadingAt = measurementTime;
+          await runner.manager.save(Sensor, s);
         }
-        await runner.rollbackTransaction();
-        return { message: 'Duplicate reading skipped.', measurementTime: dto.measurementTime };
+        await this.workers.enqueueDailySummary(u.sub, measurementTime.toISOString().slice(0, 10), runner);
+        await runner.commitTransaction();
+        void this.notify(u.sub, s.id, dto.glucoseValue, duplicate.measurementTime);
+        return { message: 'Measurement updated.', measurementTime: dto.measurementTime };
       }
       await runner.manager.save(GlucoseMeasurement, this.entity(u.sub, s, dto));
       if (!s.lastReadingAt || measurementTime > s.lastReadingAt) {
@@ -213,7 +220,7 @@ export class GlucoseController {
     // overlapping uploads.
     const uniqueMeasurements = [...new Map(
       accepted.map((measurement) => [
-        new Date(measurement.measurementTime).getTime(),
+        measurement.sequenceNumber ?? this.exactSecond(measurement.measurementTime).getTime(),
         measurement,
       ]),
     ).values()];
@@ -228,24 +235,16 @@ export class GlucoseController {
       await runner.startTransaction();
       try {
         for (const d of uniqueMeasurements) {
-          const measurementTime = new Date(d.measurementTime);
-          const duplicate = await runner.manager.findOne(GlucoseMeasurement, {
-            where: { sensorId: s.id, measurementTime },
-          });
+          d.measurementTime = this.exactSecond(d.measurementTime).toISOString();
+          const { row: duplicate, measurementTime } = await this.findExisting(runner, s.id, d);
           if (duplicate) {
-            const incomingSeq = d.sequenceNumber ?? 0;
-            const existingSeq = duplicate.sequenceNumber ?? 0;
-            if (incomingSeq >= existingSeq) {
-              this.applyReading(duplicate, s, d);
-              await runner.manager.save(GlucoseMeasurement, duplicate);
-              inserted++;
-              insertedRows.push({ value: d.glucoseValue, time: measurementTime });
-              affectedDates.add(measurementTime.toISOString().slice(0, 10));
-              if (!s.lastReadingAt || measurementTime > s.lastReadingAt) {
-                s.lastReadingAt = measurementTime;
-              }
-            } else {
-              duplicates++;
+            this.applyReading(duplicate, s, d);
+            await runner.manager.save(GlucoseMeasurement, duplicate);
+            inserted++;
+            insertedRows.push({ value: d.glucoseValue, time: duplicate.measurementTime });
+            affectedDates.add(duplicate.measurementTime.toISOString().slice(0, 10));
+            if (!s.lastReadingAt || measurementTime > s.lastReadingAt) {
+              s.lastReadingAt = measurementTime;
             }
             if (d.sequenceNumber != null) acknowledged.push(d.sequenceNumber);
             continue;
