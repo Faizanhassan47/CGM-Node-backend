@@ -259,6 +259,19 @@ export async function ensureTablesExist(dataSource: DataSource): Promise<void> {
        CreatedAt DATETIME NOT NULL DEFAULT GETUTCDATE()
      );`,
 
+    `IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'EmailVerificationRequests')
+     CREATE TABLE EmailVerificationRequests (
+       Id INT IDENTITY(1,1) PRIMARY KEY,
+       UserId INT NOT NULL,
+       Email NVARCHAR(255) NOT NULL,
+       Token NVARCHAR(255) NOT NULL,
+       OtpCode NVARCHAR(20) NOT NULL,
+       ExpiresAt DATETIME NOT NULL,
+       IsUsed BIT NOT NULL DEFAULT 0,
+       UsedAt DATETIME NULL,
+       CreatedAt DATETIME NOT NULL DEFAULT GETUTCDATE()
+     );`,
+
     `IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'AppVersions')
      CREATE TABLE AppVersions (
        Id INT IDENTITY(1,1) PRIMARY KEY,
@@ -587,6 +600,19 @@ export async function ensureTablesExist(dataSource: DataSource): Promise<void> {
        IsUsed TINYINT(1) NOT NULL DEFAULT 0,
        UsedAt DATETIME NULL,
        CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+     );`,
+
+    `CREATE TABLE IF NOT EXISTS EmailVerificationRequests (
+       Id INT AUTO_INCREMENT PRIMARY KEY,
+       UserId INT NOT NULL,
+       Email VARCHAR(255) NOT NULL,
+       Token VARCHAR(255) NOT NULL,
+       OtpCode VARCHAR(20) NOT NULL,
+       ExpiresAt DATETIME NOT NULL,
+       IsUsed TINYINT(1) NOT NULL DEFAULT 0,
+       UsedAt DATETIME NULL,
+       CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+       KEY idx_email_verification_lookup (Email, OtpCode, IsUsed, ExpiresAt)
      );`,
 
     `CREATE TABLE IF NOT EXISTS AppVersions (

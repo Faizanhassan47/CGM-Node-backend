@@ -24,6 +24,7 @@ import {
 } from "./auth.dto";
 import { normalizeSql } from "../common/sql-helper";
 import {
+  buildEmailVerificationHtml,
   buildPasswordResetEmailHtml,
   buildWelcomeEmailHtml,
 } from "../common/email-template";
@@ -117,6 +118,7 @@ export class AuthService {
           email: user.email,
           name: user.fullName,
           auth_provider: user.authProvider,
+          email_verified: Boolean(user.emailVerified),
           role: "Patient",
           token_version: user.tokenVersion,
         },
@@ -146,11 +148,100 @@ export class AuthService {
       },
     };
   }
+
+  private async issueEmailVerificationCode(user: User) {
+    const email = user.email.trim().toLowerCase();
+    const otpNumber = (randomBytes(4).readUInt32BE(0) % 900000) + 100000;
+    const otp = String(otpNumber);
+    const token = randomBytes(32).toString("hex");
+
+    await this.users.manager.query(
+      normalizeSql(
+        "UPDATE EmailVerificationRequests SET IsUsed=1,UsedAt=UTC_TIMESTAMP() WHERE Email=? AND IsUsed=0",
+        this.users.manager.connection,
+      ),
+      [email],
+    );
+    await this.users.manager.query(
+      normalizeSql(
+        "INSERT INTO EmailVerificationRequests(UserId,Email,Token,OtpCode,ExpiresAt,IsUsed,CreatedAt) VALUES(?,?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 15 MINUTE),0,UTC_TIMESTAMP())",
+        this.users.manager.connection,
+      ),
+      [user.id, email, token, otp],
+    );
+
+    // Don't block signup/login on SMTP latency; code is already stored.
+    void this.sendEmailVerification(user.fullName, email, otp).catch(() => undefined);
+    return otp;
+  }
+
+  private async sendEmailVerification(
+    fullName: string,
+    email: string,
+    otp: string,
+  ): Promise<void> {
+    const fromName = (
+      this.config.get<string>("SMTP_FROM_NAME") || "Circle CGM"
+    ).replace(/"/g, "");
+    const fromEmail =
+      this.config.get<string>("SMTP_FROM_EMAIL") || "cgm@gms-world.co";
+
+    try {
+      const transporter = this.getMailTransporter();
+      await transporter.sendMail({
+        from: `"${fromName}" <${fromEmail}>`,
+        to: email,
+        subject: `${otp} is your Circle verification code`,
+        text: `Hello ${fullName},\n\nYour Circle email verification code is: ${otp}\n\nThis 6-digit code expires in 15 minutes. Never share it with anyone.\nIf you did not create a Circle account, ignore this email.\n\nBest regards,\nCircle Support`,
+        html: buildEmailVerificationHtml({
+          otp,
+          recipientEmail: email,
+          fullName,
+          expiresInMinutes: 15,
+        }),
+      });
+      console.log(`[AUTH] Verification email delivered to ${email}`);
+    } catch (err: any) {
+      console.error(
+        `[AUTH] Failed to deliver verification email to ${email}:`,
+        err?.message || err,
+      );
+      throw err;
+    }
+  }
+
   async register(dto: RegisterDto) {
     const email = dto.email.trim().toLowerCase();
     console.log(`[AUTH] Register request received for: ${email}`);
     const existing = await this.users.findOne({ where: { email } });
     if (existing) {
+      if (!existing.emailVerified && existing.authProvider === "Email") {
+        existing.fullName = dto.fullName.trim();
+        existing.passwordHash = await this.hash(dto.password);
+        await this.users.save(existing);
+        const profile = await this.profiles.findOneBy({ userId: existing.id });
+        if (profile) {
+          profile.phoneNumber = dto.phoneNumber?.trim() || profile.phoneNumber;
+          profile.dateOfBirth = dto.dateOfBirth ?? profile.dateOfBirth;
+          profile.gender = dto.gender ?? profile.gender;
+          profile.preferredGlucoseUnit =
+            dto.preferredGlucoseUnit || profile.preferredGlucoseUnit;
+          profile.profileCompleted = false;
+          await this.profiles.save(profile);
+        }
+        try {
+          await this.issueEmailVerificationCode(existing);
+        } catch {
+          // Still return verification-required so the app can show the code screen.
+        }
+        return {
+          success: true,
+          requiresEmailVerification: true,
+          email,
+          message:
+            "Account pending verification. Enter the 6-digit code sent to your email.",
+        };
+      }
       throw new BadRequestException({
         message:
           "An account with this email already exists. Please log in instead.",
@@ -163,7 +254,6 @@ export class AuthService {
         email,
         passwordHash: await this.hash(dto.password),
         authProvider: "Email",
-        // Email/password accounts start unverified; Google social sets verified.
         emailVerified: false,
         isActive: true,
         referralCode: randomBytes(8).toString("hex").toUpperCase(),
@@ -180,14 +270,96 @@ export class AuthService {
         preferredGlucoseUnit: dto.preferredGlucoseUnit,
         language: "English",
         theme: "System",
-        profileCompleted: true,
+        // Force profile setup after email verification.
+        profileCompleted: false,
         createdAt: new Date(),
       }),
     );
-    // Never block signup on SMTP — iPage timeouts were freezing the app spinner.
+
+    try {
+      await this.issueEmailVerificationCode(user);
+    } catch {
+      // Account exists; app can resend from the verification screen.
+      console.error(`[AUTH] Verification email failed for ${email}`);
+    }
+
+    return {
+      success: true,
+      requiresEmailVerification: true,
+      email,
+      message:
+        "Account created. Enter the 6-digit code we sent to your email.",
+    };
+  }
+
+  async resendEmailVerification(dto: EmailDto) {
+    const email = dto.email.trim().toLowerCase();
+    const user = await this.users.findOneBy({ email });
+    if (!user || !user.isActive) {
+      return {
+        success: true,
+        message:
+          "If the account exists, a verification code was sent to your email.",
+      };
+    }
+    if (user.emailVerified) {
+      return {
+        success: true,
+        message: "This email is already verified. You can sign in.",
+        alreadyVerified: true,
+      };
+    }
+    try {
+      await this.issueEmailVerificationCode(user);
+    } catch {
+      // Generic response — do not leak SMTP failures to attackers.
+    }
+    return {
+      success: true,
+      requiresEmailVerification: true,
+      email,
+      message:
+        "If the account exists, a verification code was sent to your email.",
+    };
+  }
+
+  async verifyEmail(dto: VerifyResetDto) {
+    const email = dto.email.trim().toLowerCase();
+    const code = dto.code.trim();
+    const rows = await this.users.manager.query(
+      normalizeSql(
+        "SELECT Id,UserId FROM EmailVerificationRequests WHERE Email=? AND OtpCode=? AND IsUsed=0 AND ExpiresAt>UTC_TIMESTAMP() ORDER BY CreatedAt DESC LIMIT 1",
+        this.users.manager.connection,
+      ),
+      [email, code],
+    );
+    if (!rows.length) {
+      throw new BadRequestException({
+        success: false,
+        message: "Invalid or expired verification code.",
+      });
+    }
+    const user = await this.users.findOneBy({ id: Number(rows[0].UserId) });
+    if (!user || !user.isActive) {
+      throw new BadRequestException({
+        success: false,
+        message: "User not found.",
+      });
+    }
+    user.emailVerified = true;
+    user.lastLoginAt = new Date();
+    await this.users.save(user);
+    await this.users.manager.query(
+      normalizeSql(
+        "UPDATE EmailVerificationRequests SET IsUsed=1,UsedAt=UTC_TIMESTAMP() WHERE Id=?",
+        this.users.manager.connection,
+      ),
+      [rows[0].Id],
+    );
     void this.sendWelcomeEmail(user.fullName, user.email, user.referralCode);
     return this.response(user);
   }
+
   async login(dto: LoginDto) {
     const user = await this.users.findOneBy({
       email: dto.email.trim().toLowerCase(),
@@ -203,6 +375,18 @@ export class AuthService {
       throw new UnauthorizedException({
         message:
           "This account is disabled. Contact support to reactivate it.",
+      });
+    }
+    if (!user.emailVerified && user.authProvider === "Email") {
+      try {
+        await this.issueEmailVerificationCode(user);
+      } catch {
+        // App still opens verification UI.
+      }
+      throw new UnauthorizedException({
+        message: "Please verify your email before signing in.",
+        requiresEmailVerification: true,
+        email: user.email,
       });
     }
     user.lastLoginAt = new Date();

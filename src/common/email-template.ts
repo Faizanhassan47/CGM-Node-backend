@@ -64,6 +64,43 @@ function emailShell(params: {
 </html>`.trim();
 }
 
+export function buildEmailVerificationHtml(params: {
+  otp: string;
+  recipientEmail: string;
+  fullName?: string;
+  expiresInMinutes?: number;
+}): string {
+  const expiresInMinutes = params.expiresInMinutes ?? 15;
+  const safeOtp = escapeHtml(params.otp);
+  const safeRecipientEmail = escapeHtml(params.recipientEmail);
+  const greeting = params.fullName
+    ? `Hi ${escapeHtml(params.fullName)},`
+    : "Hello,";
+
+  return emailShell({
+    previewText: `Your Circle email verification code is ${safeOtp}.`,
+    title: "Verify your email",
+    subtitle: "Confirm your Circle account",
+    footer: "This is an automated security email. Please do not reply.",
+    body: `
+      <p style="margin:0 0 14px;color:#1D1B1A;font-size:16px;line-height:1.6;font-weight:650;">${greeting}</p>
+      <p style="margin:0 0 24px;color:#6F6764;font-size:14px;line-height:1.65;">Enter this 6-digit code in the Circle app to verify <strong style="color:#1D1B1A;">${safeRecipientEmail}</strong> and finish creating your account.</p>
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:0 0 24px;">
+        <tr>
+          <td align="center" style="background-color:#FFF3F0;border:2px dashed #FF8065;border-radius:12px;padding:22px 16px;">
+            <p style="margin:0 0 8px;color:#D93F2E;font-size:11px;font-weight:750;text-transform:uppercase;letter-spacing:1.5px;">Verification code</p>
+            <p style="margin:0;color:#1D1B1A;font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;font-size:38px;line-height:1.2;font-weight:800;letter-spacing:10px;padding-left:10px;">${safeOtp}</p>
+            <p style="display:inline-block;margin:12px 0 0;background-color:#FFE5E0;color:#D93F2E;font-size:11px;font-weight:650;padding:5px 11px;border-radius:12px;">Expires in ${expiresInMinutes} minutes</p>
+          </td>
+        </tr>
+      </table>
+      <p style="margin:0 0 18px;color:#6F6764;font-size:13px;line-height:1.65;">Never share this code. Circle support will never ask for your password or verification code.</p>
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#FFF9E6;border-left:3px solid #EAB308;border-radius:4px;">
+        <tr><td style="padding:12px 14px;color:#7A5700;font-size:12px;line-height:1.55;"><strong>Did not create an account?</strong> You can safely ignore this email.</td></tr>
+      </table>`,
+  });
+}
+
 export function buildPasswordResetEmailHtml(params: {
   otp: string;
   recipientEmail: string;

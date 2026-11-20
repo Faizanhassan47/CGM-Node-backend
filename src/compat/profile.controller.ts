@@ -125,6 +125,7 @@ export class ProfileController {
       email: user.email,
       authProvider: user.authProvider,
       hasPassword: Boolean(user.passwordHash),
+      emailVerified: Boolean(user.emailVerified),
       phoneNumber: p.phoneNumber,
       dateOfBirth: p.dateOfBirth,
       gender: p.gender,
