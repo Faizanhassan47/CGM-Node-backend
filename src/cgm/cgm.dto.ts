@@ -12,6 +12,8 @@ export class MeasurementDto {
   @IsOptional() @IsNumber() deviceTemperatureC?: number;
   @IsOptional() @IsNumber() we1CurrentNa?: number;
   @IsOptional() @IsInt() @Min(0) @Max(65535) sequenceNumber?: number;
+  @IsOptional() @IsDateString() receivedAt?: string;
+  @IsOptional() @IsString() source?: string;
 }
 export class BulkSyncDto {
   @IsInt() sensorId!: number;

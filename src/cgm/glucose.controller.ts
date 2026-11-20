@@ -112,7 +112,23 @@ export class GlucoseController {
     }
   }
   private validate(s: Sensor, d: MeasurementDto) { const time = new Date(d.measurementTime); if (!s.isActive || ['Expired', 'Stopped'].includes(s.status)) return 'The sensor session is not active.'; if (!s.activatedAt || time < s.activatedAt) return 'Warm-up measurements cannot be uploaded as glucose readings.'; if (s.expiresAt && time > s.expiresAt) return 'The measurement occurred after the sensor expired.'; if (time > new Date(Date.now() + 300_000)) return 'The measurement timestamp is in the future.'; return null; }
-  private entity(userId: number, s: Sensor, d: MeasurementDto) { return this.readings.create({ userId, sensorId: s.id, deviceId: s.deviceId, sequenceNumber: d.sequenceNumber ?? null, glucoseValue: String(d.glucoseValue), measurementTime: new Date(d.measurementTime), batteryVoltageMv: d.batteryVoltageMv ?? null, deviceTemperatureC: d.deviceTemperatureC == null ? null : String(d.deviceTemperatureC), we1CurrentNa: d.we1CurrentNa == null ? null : String(d.we1CurrentNa), isSynced: true, createdAt: new Date() }); }
+  private entity(userId: number, s: Sensor, d: MeasurementDto) {
+    return this.readings.create({
+      userId,
+      sensorId: s.id,
+      deviceId: s.deviceId,
+      sequenceNumber: d.sequenceNumber ?? null,
+      glucoseValue: String(d.glucoseValue),
+      measurementTime: this.exactSecond(d.measurementTime),
+      batteryVoltageMv: d.batteryVoltageMv ?? null,
+      deviceTemperatureC: d.deviceTemperatureC == null ? null : String(d.deviceTemperatureC),
+      we1CurrentNa: d.we1CurrentNa == null ? null : String(d.we1CurrentNa),
+      isSynced: true,
+      createdAt: new Date(),
+      receivedAt: d.receivedAt ? new Date(d.receivedAt) : new Date(),
+      source: d.source ?? null,
+    });
+  }
   private applyReading(row: GlucoseMeasurement, s: Sensor, d: MeasurementDto) {
     row.deviceId = s.deviceId;
     row.sequenceNumber = d.sequenceNumber ?? row.sequenceNumber;
@@ -121,6 +137,8 @@ export class GlucoseController {
     row.deviceTemperatureC = d.deviceTemperatureC == null ? row.deviceTemperatureC : String(d.deviceTemperatureC);
     row.we1CurrentNa = d.we1CurrentNa == null ? row.we1CurrentNa : String(d.we1CurrentNa);
     row.isSynced = true;
+    row.receivedAt = d.receivedAt ? new Date(d.receivedAt) : new Date();
+    if (d.source) row.source = d.source;
   }
   private exactSecond(iso: string) {
     const time = new Date(iso);
@@ -160,14 +178,20 @@ export class GlucoseController {
       const { row: duplicate } = await this.findExisting(runner, s.id, dto);
       if (duplicate) {
         this.applyReading(duplicate, s, dto);
-        await runner.manager.save(GlucoseMeasurement, duplicate);
+        // MeasurementTime is PK — if the live clock corrected the second, replace the row.
+        if (duplicate.measurementTime.getTime() !== measurementTime.getTime()) {
+          await runner.manager.remove(GlucoseMeasurement, duplicate);
+          await runner.manager.save(GlucoseMeasurement, this.entity(u.sub, s, dto));
+        } else {
+          await runner.manager.save(GlucoseMeasurement, duplicate);
+        }
         if (!s.lastReadingAt || measurementTime > s.lastReadingAt) {
           s.lastReadingAt = measurementTime;
           await runner.manager.save(Sensor, s);
         }
         await this.workers.enqueueDailySummary(u.sub, measurementTime.toISOString().slice(0, 10), runner);
         await runner.commitTransaction();
-        void this.notify(u.sub, s.id, dto.glucoseValue, duplicate.measurementTime);
+        void this.notify(u.sub, s.id, dto.glucoseValue, measurementTime);
         return { message: 'Measurement updated.', measurementTime: dto.measurementTime };
       }
       await runner.manager.save(GlucoseMeasurement, this.entity(u.sub, s, dto));
@@ -239,10 +263,15 @@ export class GlucoseController {
           const { row: duplicate, measurementTime } = await this.findExisting(runner, s.id, d);
           if (duplicate) {
             this.applyReading(duplicate, s, d);
-            await runner.manager.save(GlucoseMeasurement, duplicate);
+            if (duplicate.measurementTime.getTime() !== measurementTime.getTime()) {
+              await runner.manager.remove(GlucoseMeasurement, duplicate);
+              await runner.manager.save(GlucoseMeasurement, this.entity(u.sub, s, d));
+            } else {
+              await runner.manager.save(GlucoseMeasurement, duplicate);
+            }
             inserted++;
-            insertedRows.push({ value: d.glucoseValue, time: duplicate.measurementTime });
-            affectedDates.add(duplicate.measurementTime.toISOString().slice(0, 10));
+            insertedRows.push({ value: d.glucoseValue, time: measurementTime });
+            affectedDates.add(measurementTime.toISOString().slice(0, 10));
             if (!s.lastReadingAt || measurementTime > s.lastReadingAt) {
               s.lastReadingAt = measurementTime;
             }
@@ -381,6 +410,8 @@ export class GlucoseController {
       deviceTemperatureC:
         r.deviceTemperatureC == null ? null : Number(r.deviceTemperatureC),
       we1CurrentNa: r.we1CurrentNa == null ? null : Number(r.we1CurrentNa),
+      receivedAt: r.receivedAt ?? null,
+      source: r.source ?? null,
     }));
 
     return {

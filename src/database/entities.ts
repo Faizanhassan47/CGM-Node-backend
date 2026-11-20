@@ -96,6 +96,9 @@ export class GlucoseMeasurement {
   @Column({ name: 'WE1CurrentNa', type: 'decimal', precision: 12, scale: 4, nullable: true }) we1CurrentNa!: string | null;
   @Column({ name: 'IsSynced', default: false }) isSynced!: boolean;
   @Column({ name: 'CreatedAt', type: 'datetime' }) createdAt!: Date;
+  /** Phone UTC when the app displayed/uploaded this reading (matches Home "Last reading"). */
+  @Column({ name: 'ReceivedAt', type: 'datetime', precision: 3, nullable: true }) receivedAt!: Date | null;
+  @Column({ name: 'Source', type: 'varchar', length: 20, nullable: true }) source!: string | null;
 }
 
 export const CORE_ENTITIES = [User, PatientProfile, CgmDevice, Sensor, GlucoseMeasurement];

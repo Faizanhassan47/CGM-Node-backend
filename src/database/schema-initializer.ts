@@ -438,7 +438,10 @@ export async function ensureTablesExist(dataSource: DataSource): Promise<void> {
        WE1CurrentNa DECIMAL(12,4) NULL,
        IsSynced TINYINT(1) NOT NULL DEFAULT 0,
        CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-       PRIMARY KEY (SensorId, MeasurementTime)
+       ReceivedAt DATETIME(3) NULL,
+       Source VARCHAR(20) NULL,
+       PRIMARY KEY (SensorId, MeasurementTime),
+       UNIQUE KEY uq_glucose_sensor_seq (SensorId, SequenceNumber)
      );`,
 
     `CREATE TABLE IF NOT EXISTS Alerts (
@@ -648,6 +651,8 @@ export async function ensureTablesExist(dataSource: DataSource): Promise<void> {
     { table: 'PatientProfile', column: 'ProfilePictureUrl', definition: isMssql ? 'NVARCHAR(500) NULL' : 'VARCHAR(500) NULL' },
     { table: 'PatientProfile', column: 'PushNotificationsEnabled', definition: isMssql ? 'BIT NOT NULL DEFAULT 1' : 'TINYINT(1) NOT NULL DEFAULT 1' },
     { table: 'PatientProfile', column: 'CriticalGlucoseAlertsEnabled', definition: isMssql ? 'BIT NOT NULL DEFAULT 1' : 'TINYINT(1) NOT NULL DEFAULT 1' },
+    { table: 'GlucoseMeasurements', column: 'ReceivedAt', definition: isMssql ? 'DATETIME2(3) NULL' : 'DATETIME(3) NULL' },
+    { table: 'GlucoseMeasurements', column: 'Source', definition: isMssql ? 'NVARCHAR(20) NULL' : 'VARCHAR(20) NULL' },
   ];
 
   for (const { table, column, definition } of requiredColumns) {
