@@ -25,11 +25,17 @@ export class DietAssistantService {
     const apiKey = this.config.get<string>('OPENAI_API_KEY');
     if (!apiKey) throw new ServiceUnavailableException('Diet assistant is not configured.');
     const model = this.config.get<string>('OPENAI_MODEL') || 'gpt-4.1-mini';
+    // Prefer the HTTP request AbortSignal (ai lane timeout). Fallback keeps a
+    // hard ceiling if the service is called outside the interceptor.
+    const timeoutMs = Number(this.config.get<string>('API_QUEUE_AI_TIMEOUT_MS') ?? 45_000);
+    const cappedMs = Number.isFinite(timeoutMs)
+      ? Math.min(120_000, Math.max(10_000, Math.floor(timeoutMs)))
+      : 45_000;
     const response = await fetch('https://api.openai.com/v1/responses', {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ model, instructions: SYSTEM_INSTRUCTIONS, input: `User question:\n${message}\n\nAuthenticated CGM context:\n${JSON.stringify(context)}`, max_output_tokens: 700 }),
-      signal: signal ?? AbortSignal.timeout(25_000),
+      signal: signal ?? AbortSignal.timeout(cappedMs),
     });
     if (!response.ok) throw new ServiceUnavailableException('Diet assistant is temporarily unavailable.');
     const data = await response.json() as { output_text?: string };

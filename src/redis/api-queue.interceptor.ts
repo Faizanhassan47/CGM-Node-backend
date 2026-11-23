@@ -2,11 +2,16 @@ import { CallHandler, ExecutionContext, Injectable, NestInterceptor } from '@nes
 import { Observable, from, lastValueFrom } from 'rxjs';
 import { ApiQueueService, QueueLane } from './api-queue.service';
 
+const INGEST_PATH = /\/api\/Glucose\/(sync-bulk|measurement)\b/i;
+const AI_PATH = /\/api\/DietAssistant\b/i;
 const HEAVY_PATH =
-  /\/api\/(Glucose\/(sync-bulk|measurement|history|summary)|DietAssistant|Reports|Admin\/users\/[^/]+\/record)/i;
+  /\/api\/(Glucose\/(history|summary)|Reports|Admin\/users\/[^/]+\/record)/i;
 
 function classify(path: string): QueueLane {
-  return HEAVY_PATH.test(path) ? 'heavy' : 'light';
+  if (INGEST_PATH.test(path)) return 'ingest';
+  if (AI_PATH.test(path)) return 'ai';
+  if (HEAVY_PATH.test(path)) return 'heavy';
+  return 'light';
 }
 
 @Injectable()

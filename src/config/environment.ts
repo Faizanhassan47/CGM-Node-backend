@@ -18,11 +18,17 @@ class Environment {
   @IsOptional() @IsString() RUN_SCHEDULED_WORKERS?: string;
   @IsOptional() @IsString() WORKER_ONLY?: string;
   @IsOptional() @IsString() API_QUEUE_LIGHT_LIMIT?: string;
+  @IsOptional() @IsString() API_QUEUE_INGEST_LIMIT?: string;
   @IsOptional() @IsString() API_QUEUE_HEAVY_LIMIT?: string;
+  @IsOptional() @IsString() API_QUEUE_AI_LIMIT?: string;
   @IsOptional() @IsString() API_QUEUE_LIGHT_WAIT?: string;
+  @IsOptional() @IsString() API_QUEUE_INGEST_WAIT?: string;
   @IsOptional() @IsString() API_QUEUE_HEAVY_WAIT?: string;
+  @IsOptional() @IsString() API_QUEUE_AI_WAIT?: string;
   @IsOptional() @IsString() API_QUEUE_LIGHT_TIMEOUT_MS?: string;
+  @IsOptional() @IsString() API_QUEUE_INGEST_TIMEOUT_MS?: string;
   @IsOptional() @IsString() API_QUEUE_HEAVY_TIMEOUT_MS?: string;
+  @IsOptional() @IsString() API_QUEUE_AI_TIMEOUT_MS?: string;
   @IsOptional() @IsString() DB_POOL_LIMIT?: string;
   @IsOptional() @IsString() OPENAI_API_KEY?: string;
   @IsOptional() @IsString() OPENAI_MODEL?: string;

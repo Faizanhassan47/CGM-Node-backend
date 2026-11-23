@@ -1,7 +1,13 @@
 import { Injectable, RequestTimeoutException, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
-export type QueueLane = 'light' | 'heavy';
+/**
+ * light  — auth, profile, devices, family, wellness
+ * ingest — Glucose sync-bulk / measurement (reserved upload capacity)
+ * heavy  — history, summary, reports, heavy admin
+ * ai     — Diet Assistant (isolated from glucose sync)
+ */
+export type QueueLane = 'light' | 'ingest' | 'heavy' | 'ai';
 
 type Job = () => void;
 
@@ -15,7 +21,9 @@ type LaneState = {
 
 export type QueueSnapshot = {
   light: { active: number; waiting: number; limit: number };
+  ingest: { active: number; waiting: number; limit: number };
   heavy: { active: number; waiting: number; limit: number };
+  ai: { active: number; waiting: number; limit: number };
   depth: number;
 };
 
@@ -25,9 +33,16 @@ function intEnv(config: ConfigService, key: string, fallback: number, min: numbe
   return Math.min(max, Math.max(min, Math.floor(raw)));
 }
 
+const BUSY_MESSAGE: Record<QueueLane, string> = {
+  light: 'Server is busy. Try again.',
+  ingest: 'Sync queue is busy. Try again shortly.',
+  heavy: 'Report queue is busy. Try again shortly.',
+  ai: 'Diet assistant is busy. Try again shortly.',
+};
+
 /**
- * Dual in-process queues so auth/light traffic is not blocked by sync-bulk/AI.
- * Limits are env-tunable for capacity changes without code edits.
+ * Multi-lane in-process queues so auth stays responsive, glucose uploads keep
+ * reserved slots, and slow AI calls cannot starve sync-bulk.
  */
 @Injectable()
 export class ApiQueueService {
@@ -42,26 +57,47 @@ export class ApiQueueService {
         timeoutMs: intEnv(config, 'API_QUEUE_LIGHT_TIMEOUT_MS', 10_000, 3_000, 60_000),
         waiting: [],
       },
+      // Reserved for uploads — default 4 of the former shared heavy budget of 8.
+      ingest: {
+        active: 0,
+        limit: intEnv(config, 'API_QUEUE_INGEST_LIMIT', 4, 1, 16),
+        maxWaiting: intEnv(config, 'API_QUEUE_INGEST_WAIT', 40, 8, 200),
+        timeoutMs: intEnv(config, 'API_QUEUE_INGEST_TIMEOUT_MS', 25_000, 5_000, 120_000),
+        waiting: [],
+      },
       heavy: {
         active: 0,
-        limit: intEnv(config, 'API_QUEUE_HEAVY_LIMIT', 8, 2, 32),
+        limit: intEnv(config, 'API_QUEUE_HEAVY_LIMIT', 3, 1, 32),
         maxWaiting: intEnv(config, 'API_QUEUE_HEAVY_WAIT', 40, 8, 200),
         timeoutMs: intEnv(config, 'API_QUEUE_HEAVY_TIMEOUT_MS', 25_000, 5_000, 120_000),
+        waiting: [],
+      },
+      ai: {
+        active: 0,
+        limit: intEnv(config, 'API_QUEUE_AI_LIMIT', 2, 1, 8),
+        maxWaiting: intEnv(config, 'API_QUEUE_AI_WAIT', 12, 2, 50),
+        timeoutMs: intEnv(config, 'API_QUEUE_AI_TIMEOUT_MS', 45_000, 10_000, 120_000),
         waiting: [],
       },
     };
   }
 
   get depth(): number {
-    return this.lanes.light.waiting.length + this.lanes.heavy.waiting.length;
+    return (
+      this.lanes.light.waiting.length +
+      this.lanes.ingest.waiting.length +
+      this.lanes.heavy.waiting.length +
+      this.lanes.ai.waiting.length
+    );
   }
 
   snapshot(): QueueSnapshot {
-    const light = this.lanes.light;
-    const heavy = this.lanes.heavy;
+    const { light, ingest, heavy, ai } = this.lanes;
     return {
       light: { active: light.active, waiting: light.waiting.length, limit: light.limit },
+      ingest: { active: ingest.active, waiting: ingest.waiting.length, limit: ingest.limit },
       heavy: { active: heavy.active, waiting: heavy.waiting.length, limit: heavy.limit },
+      ai: { active: ai.active, waiting: ai.waiting.length, limit: ai.limit },
       depth: this.depth,
     };
   }
@@ -85,13 +121,7 @@ export class ApiQueueService {
   ): Promise<T> {
     const lane = this.lanes[laneName];
     if (http && lane.waiting.length >= lane.maxWaiting) {
-      return Promise.reject(
-        new ServiceUnavailableException(
-          laneName === 'heavy'
-            ? 'Sync queue is busy. Try again shortly.'
-            : 'Server is busy. Try again.',
-        ),
-      );
+      return Promise.reject(new ServiceUnavailableException(BUSY_MESSAGE[laneName]));
     }
 
     return new Promise<T>((resolve, reject) => {

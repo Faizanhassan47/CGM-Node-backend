@@ -32,7 +32,7 @@ if (!base) {
   process.exit(2);
 }
 
-if (/sync-bulk|measurement|DietAssistant/i.test(path)) {
+if (/sync-bulk|measurement|history|summary|DietAssistant|Reports/i.test(path)) {
   console.error('Refusing write/heavy paths in this probe. Use k6 load-test.js on staging only.');
   process.exit(2);
 }
