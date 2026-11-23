@@ -272,6 +272,24 @@ export async function ensureTablesExist(dataSource: DataSource): Promise<void> {
        CreatedAt DATETIME NOT NULL DEFAULT GETUTCDATE()
      );`,
 
+    `IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'PendingEmailSignups')
+     CREATE TABLE PendingEmailSignups (
+       Id INT IDENTITY(1,1) PRIMARY KEY,
+       Email NVARCHAR(255) NOT NULL,
+       FullName NVARCHAR(255) NOT NULL,
+       PasswordHash NVARCHAR(500) NOT NULL,
+       PhoneNumber NVARCHAR(50) NULL,
+       DateOfBirth DATE NULL,
+       Gender NVARCHAR(50) NULL,
+       PreferredGlucoseUnit NVARCHAR(20) NOT NULL DEFAULT 'mg/dL',
+       Token NVARCHAR(255) NOT NULL,
+       OtpCode NVARCHAR(20) NOT NULL,
+       ExpiresAt DATETIME NOT NULL,
+       IsUsed BIT NOT NULL DEFAULT 0,
+       UsedAt DATETIME NULL,
+       CreatedAt DATETIME NOT NULL DEFAULT GETUTCDATE()
+     );`,
+
     `IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'AppVersions')
      CREATE TABLE AppVersions (
        Id INT IDENTITY(1,1) PRIMARY KEY,
@@ -613,6 +631,24 @@ export async function ensureTablesExist(dataSource: DataSource): Promise<void> {
        UsedAt DATETIME NULL,
        CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
        KEY idx_email_verification_lookup (Email, OtpCode, IsUsed, ExpiresAt)
+     );`,
+
+    `CREATE TABLE IF NOT EXISTS PendingEmailSignups (
+       Id INT AUTO_INCREMENT PRIMARY KEY,
+       Email VARCHAR(255) NOT NULL,
+       FullName VARCHAR(255) NOT NULL,
+       PasswordHash VARCHAR(500) NOT NULL,
+       PhoneNumber VARCHAR(50) NULL,
+       DateOfBirth DATE NULL,
+       Gender VARCHAR(50) NULL,
+       PreferredGlucoseUnit VARCHAR(20) NOT NULL DEFAULT 'mg/dL',
+       Token VARCHAR(255) NOT NULL,
+       OtpCode VARCHAR(20) NOT NULL,
+       ExpiresAt DATETIME NOT NULL,
+       IsUsed TINYINT(1) NOT NULL DEFAULT 0,
+       UsedAt DATETIME NULL,
+       CreatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+       KEY idx_pending_email_signup_lookup (Email, OtpCode, IsUsed, ExpiresAt)
      );`,
 
     `CREATE TABLE IF NOT EXISTS AppVersions (

@@ -150,10 +150,13 @@ export class AuthService {
     };
   }
 
+  private makeOtp() {
+    return String((randomBytes(4).readUInt32BE(0) % 900000) + 100000);
+  }
+
   private async issueEmailVerificationCode(user: User) {
     const email = user.email.trim().toLowerCase();
-    const otpNumber = (randomBytes(4).readUInt32BE(0) % 900000) + 100000;
-    const otp = String(otpNumber);
+    const otp = this.makeOtp();
     const token = randomBytes(32).toString("hex");
 
     await this.users.manager.query(
@@ -174,6 +177,66 @@ export class AuthService {
     // Don't block signup/login on SMTP latency; code is already stored.
     void this.sendEmailVerification(user.fullName, email, otp).catch(() => undefined);
     return otp;
+  }
+
+  /** Store signup details until OTP succeeds — no Users row yet. */
+  private async upsertPendingEmailSignup(params: {
+    email: string;
+    fullName: string;
+    passwordHash: string;
+    phoneNumber?: string | null;
+    dateOfBirth?: string | null;
+    gender?: string | null;
+    preferredGlucoseUnit: string;
+  }) {
+    const email = params.email.trim().toLowerCase();
+    const otp = this.makeOtp();
+    const token = randomBytes(32).toString("hex");
+
+    await this.users.manager.query(
+      normalizeSql(
+        "UPDATE PendingEmailSignups SET IsUsed=1,UsedAt=UTC_TIMESTAMP() WHERE Email=? AND IsUsed=0",
+        this.users.manager.connection,
+      ),
+      [email],
+    );
+    await this.users.manager.query(
+      normalizeSql(
+        `INSERT INTO PendingEmailSignups(
+          Email,FullName,PasswordHash,PhoneNumber,DateOfBirth,Gender,PreferredGlucoseUnit,
+          Token,OtpCode,ExpiresAt,IsUsed,CreatedAt
+        ) VALUES(?,?,?,?,?,?,?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 15 MINUTE),0,UTC_TIMESTAMP())`,
+        this.users.manager.connection,
+      ),
+      [
+        email,
+        params.fullName.trim(),
+        params.passwordHash,
+        params.phoneNumber?.trim() || null,
+        params.dateOfBirth || null,
+        params.gender || null,
+        params.preferredGlucoseUnit || "mg/dL",
+        token,
+        otp,
+      ],
+    );
+
+    void this.sendEmailVerification(params.fullName.trim(), email, otp).catch(
+      () => undefined,
+    );
+    return otp;
+  }
+
+  private async removeUnverifiedEmailUser(user: User) {
+    await this.users.manager.query(
+      normalizeSql(
+        "UPDATE EmailVerificationRequests SET IsUsed=1,UsedAt=UTC_TIMESTAMP() WHERE UserId=? AND IsUsed=0",
+        this.users.manager.connection,
+      ),
+      [user.id],
+    );
+    await this.profiles.delete({ userId: user.id });
+    await this.users.delete({ id: user.id });
   }
 
   private async sendEmailVerification(
@@ -218,72 +281,29 @@ export class AuthService {
     console.log(`[AUTH] Register request received for: ${email}`);
     const existing = await this.users.findOne({ where: { email } });
     if (existing) {
-      if (!existing.emailVerified && existing.authProvider === "Email") {
-        existing.fullName = dto.fullName.trim();
-        existing.passwordHash = await this.hash(dto.password);
-        await this.users.save(existing);
-        const profile = await this.profiles.findOneBy({ userId: existing.id });
-        if (profile) {
-          profile.phoneNumber = dto.phoneNumber?.trim() || profile.phoneNumber;
-          profile.dateOfBirth = dto.dateOfBirth ?? profile.dateOfBirth;
-          profile.gender = dto.gender ?? profile.gender;
-          profile.preferredGlucoseUnit =
-            dto.preferredGlucoseUnit || profile.preferredGlucoseUnit;
-          profile.profileCompleted = false;
-          await this.profiles.save(profile);
-        }
-        try {
-          await this.issueEmailVerificationCode(existing);
-        } catch {
-          // Still return verification-required so the app can show the code screen.
-        }
-        return {
-          success: true,
-          requiresEmailVerification: true,
-          email,
+      if (existing.emailVerified || existing.authProvider !== "Email") {
+        throw new BadRequestException({
           message:
-            "Account pending verification. Enter the 6-digit code sent to your email.",
-        };
+            "An account with this email already exists. Please log in instead.",
+        });
       }
-      throw new BadRequestException({
-        message:
-          "An account with this email already exists. Please log in instead.",
-      });
+      // Legacy unverified Users row — remove so signup stays pending-only.
+      await this.removeUnverifiedEmailUser(existing);
     }
 
-    const user = await this.users.save(
-      this.users.create({
-        fullName: dto.fullName.trim(),
-        email,
-        passwordHash: await this.hash(dto.password),
-        authProvider: "Email",
-        emailVerified: false,
-        isActive: true,
-        referralCode: randomBytes(8).toString("hex").toUpperCase(),
-        tokenVersion: 0,
-        createdAt: new Date(),
-      }),
-    );
-    await this.profiles.save(
-      this.profiles.create({
-        userId: user.id,
-        phoneNumber: dto.phoneNumber?.trim() || null,
-        dateOfBirth: dto.dateOfBirth ?? null,
-        gender: dto.gender ?? null,
-        preferredGlucoseUnit: dto.preferredGlucoseUnit,
-        language: "English",
-        theme: "System",
-        // Force profile setup after email verification.
-        profileCompleted: false,
-        createdAt: new Date(),
-      }),
-    );
-
     try {
-      await this.issueEmailVerificationCode(user);
-    } catch {
-      // Account exists; app can resend from the verification screen.
-      console.error(`[AUTH] Verification email failed for ${email}`);
+      await this.upsertPendingEmailSignup({
+        email,
+        fullName: dto.fullName,
+        passwordHash: await this.hash(dto.password),
+        phoneNumber: dto.phoneNumber,
+        dateOfBirth: dto.dateOfBirth,
+        gender: dto.gender,
+        preferredGlucoseUnit: dto.preferredGlucoseUnit || "mg/dL",
+      });
+    } catch (err) {
+      console.error(`[AUTH] Pending signup / verification email failed for ${email}`, err);
+      // Still open the code screen; user can tap resend.
     }
 
     return {
@@ -291,12 +311,45 @@ export class AuthService {
       requiresEmailVerification: true,
       email,
       message:
-        "Account created. Enter the 6-digit code we sent to your email.",
+        "Enter the 6-digit code we sent to your email to finish creating your account.",
     };
   }
 
   async resendEmailVerification(dto: EmailDto) {
     const email = dto.email.trim().toLowerCase();
+
+    const pending = await this.users.manager.query(
+      normalizeSql(
+        "SELECT Id,FullName,PasswordHash,PhoneNumber,DateOfBirth,Gender,PreferredGlucoseUnit FROM PendingEmailSignups WHERE Email=? AND IsUsed=0 AND ExpiresAt>UTC_TIMESTAMP() ORDER BY CreatedAt DESC LIMIT 1",
+        this.users.manager.connection,
+      ),
+      [email],
+    );
+    if (pending.length) {
+      const row = pending[0];
+      try {
+        await this.upsertPendingEmailSignup({
+          email,
+          fullName: String(row.FullName ?? row.fullName ?? ""),
+          passwordHash: String(row.PasswordHash ?? row.passwordHash ?? ""),
+          phoneNumber: row.PhoneNumber ?? row.phoneNumber ?? null,
+          dateOfBirth: row.DateOfBirth ?? row.dateOfBirth ?? null,
+          gender: row.Gender ?? row.gender ?? null,
+          preferredGlucoseUnit:
+            row.PreferredGlucoseUnit ?? row.preferredGlucoseUnit ?? "mg/dL",
+        });
+      } catch {
+        // Generic response — do not leak SMTP failures.
+      }
+      return {
+        success: true,
+        requiresEmailVerification: true,
+        email,
+        message:
+          "If the account exists, a verification code was sent to your email.",
+      };
+    }
+
     const user = await this.users.findOneBy({ email });
     if (!user || !user.isActive) {
       return {
@@ -329,6 +382,74 @@ export class AuthService {
   async verifyEmail(dto: VerifyResetDto) {
     const email = dto.email.trim().toLowerCase();
     const code = dto.code.trim();
+
+    // Preferred path: create the Users row only after OTP succeeds.
+    const pendingRows = await this.users.manager.query(
+      normalizeSql(
+        `SELECT Id,FullName,PasswordHash,PhoneNumber,DateOfBirth,Gender,PreferredGlucoseUnit
+         FROM PendingEmailSignups
+         WHERE Email=? AND OtpCode=? AND IsUsed=0 AND ExpiresAt>UTC_TIMESTAMP()
+         ORDER BY CreatedAt DESC LIMIT 1`,
+        this.users.manager.connection,
+      ),
+      [email, code],
+    );
+    if (pendingRows.length) {
+      const pending = pendingRows[0];
+      const clash = await this.users.findOne({ where: { email } });
+      if (clash) {
+        if (clash.emailVerified || clash.authProvider !== "Email") {
+          throw new BadRequestException({
+            success: false,
+            message:
+              "An account with this email already exists. Please log in instead.",
+          });
+        }
+        await this.removeUnverifiedEmailUser(clash);
+      }
+
+      const user = await this.users.save(
+        this.users.create({
+          fullName: String(pending.FullName ?? pending.fullName ?? "").trim(),
+          email,
+          passwordHash: String(pending.PasswordHash ?? pending.passwordHash),
+          authProvider: "Email",
+          emailVerified: true,
+          isActive: true,
+          referralCode: randomBytes(8).toString("hex").toUpperCase(),
+          tokenVersion: 0,
+          lastLoginAt: new Date(),
+          createdAt: new Date(),
+        }),
+      );
+      await this.profiles.save(
+        this.profiles.create({
+          userId: user.id,
+          phoneNumber: pending.PhoneNumber ?? pending.phoneNumber ?? null,
+          dateOfBirth: pending.DateOfBirth ?? pending.dateOfBirth ?? null,
+          gender: pending.Gender ?? pending.gender ?? null,
+          preferredGlucoseUnit:
+            pending.PreferredGlucoseUnit ??
+            pending.preferredGlucoseUnit ??
+            "mg/dL",
+          language: "English",
+          theme: "System",
+          profileCompleted: false,
+          createdAt: new Date(),
+        }),
+      );
+      await this.users.manager.query(
+        normalizeSql(
+          "UPDATE PendingEmailSignups SET IsUsed=1,UsedAt=UTC_TIMESTAMP() WHERE Id=?",
+          this.users.manager.connection,
+        ),
+        [pending.Id ?? pending.id],
+      );
+      void this.sendWelcomeEmail(user.fullName, user.email, user.referralCode);
+      return this.response(user);
+    }
+
+    // Legacy path: unverified Users row + EmailVerificationRequests.
     const rows = await this.users.manager.query(
       normalizeSql(
         "SELECT Id,UserId FROM EmailVerificationRequests WHERE Email=? AND OtpCode=? AND IsUsed=0 AND ExpiresAt>UTC_TIMESTAMP() ORDER BY CreatedAt DESC LIMIT 1",
