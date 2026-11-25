@@ -2,12 +2,20 @@ import { Injectable, RequestTimeoutException, ServiceUnavailableException } from
 import { ConfigService } from '@nestjs/config';
 
 /**
- * light  — auth, profile, devices, family, wellness
+ * light  — auth, profile, devices, family, wellness writes
  * ingest — Glucose sync-bulk / measurement (reserved upload capacity)
- * heavy  — history, summary, reports, heavy admin
+ * heavy  — history, summary, reports, meal-glucose, family reports
  * ai     — Diet Assistant (isolated from glucose sync)
  */
 export type QueueLane = 'light' | 'ingest' | 'heavy' | 'ai';
+
+export type QueueLaneInfo = {
+  active: number;
+  waiting: number;
+  limit: number;
+  maxWaiting: number;
+  timeoutMs: number;
+};
 
 type Job = () => void;
 
@@ -27,6 +35,15 @@ export type QueueSnapshot = {
   depth: number;
 };
 
+export type QueueErrorBody = {
+  success: false;
+  code: 'QUEUE_BUSY' | 'QUEUE_TIMEOUT';
+  lane: QueueLane;
+  message: string;
+  retryAfterMs: number;
+  queue: { active: number; waiting: number; limit: number; maxWaiting: number };
+};
+
 function intEnv(config: ConfigService, key: string, fallback: number, min: number, max: number): number {
   const raw = Number(config.get<string | number>(key) ?? fallback);
   if (!Number.isFinite(raw)) return fallback;
@@ -40,9 +57,27 @@ const BUSY_MESSAGE: Record<QueueLane, string> = {
   ai: 'Diet assistant is busy. Try again shortly.',
 };
 
+const TIMEOUT_MESSAGE: Record<QueueLane, string> = {
+  light: 'Request timed out.',
+  ingest: 'Sync timed out. Try again shortly.',
+  heavy: 'Report request timed out. Try again shortly.',
+  ai: 'Diet assistant timed out. Try again shortly.',
+};
+
+/** Suggested client backoff when a lane rejects or times out. */
+const RETRY_AFTER_MS: Record<QueueLane, number> = {
+  light: 800,
+  ingest: 1200,
+  heavy: 1500,
+  ai: 2000,
+};
+
 /**
  * Multi-lane in-process queues so auth stays responsive, glucose uploads keep
  * reserved slots, and slow AI calls cannot starve sync-bulk.
+ *
+ * Busy / timeout errors use a stable JSON shape the Flutter client can parse:
+ * `{ success:false, code, lane, message, retryAfterMs, queue }`.
  */
 @Injectable()
 export class ApiQueueService {
@@ -102,6 +137,17 @@ export class ApiQueueService {
     };
   }
 
+  laneInfo(laneName: QueueLane): QueueLaneInfo {
+    const lane = this.lanes[laneName];
+    return {
+      active: lane.active,
+      waiting: lane.waiting.length,
+      limit: lane.limit,
+      maxWaiting: lane.maxWaiting,
+      timeoutMs: lane.timeoutMs,
+    };
+  }
+
   /** Background / worker jobs (no HTTP timeout). Uses heavy lane capacity. */
   run<T>(work: (signal: AbortSignal) => Promise<T>): Promise<T> {
     return this.schedule('heavy', work, false);
@@ -114,6 +160,42 @@ export class ApiQueueService {
     return this.schedule(lane, work, true);
   }
 
+  private busyError(laneName: QueueLane): ServiceUnavailableException {
+    const lane = this.lanes[laneName];
+    const body: QueueErrorBody = {
+      success: false,
+      code: 'QUEUE_BUSY',
+      lane: laneName,
+      message: BUSY_MESSAGE[laneName],
+      retryAfterMs: RETRY_AFTER_MS[laneName],
+      queue: {
+        active: lane.active,
+        waiting: lane.waiting.length,
+        limit: lane.limit,
+        maxWaiting: lane.maxWaiting,
+      },
+    };
+    return new ServiceUnavailableException(body);
+  }
+
+  private timeoutError(laneName: QueueLane): RequestTimeoutException {
+    const lane = this.lanes[laneName];
+    const body: QueueErrorBody = {
+      success: false,
+      code: 'QUEUE_TIMEOUT',
+      lane: laneName,
+      message: TIMEOUT_MESSAGE[laneName],
+      retryAfterMs: RETRY_AFTER_MS[laneName],
+      queue: {
+        active: lane.active,
+        waiting: lane.waiting.length,
+        limit: lane.limit,
+        maxWaiting: lane.maxWaiting,
+      },
+    };
+    return new RequestTimeoutException(body);
+  }
+
   private schedule<T>(
     laneName: QueueLane,
     work: (signal: AbortSignal) => Promise<T>,
@@ -121,7 +203,7 @@ export class ApiQueueService {
   ): Promise<T> {
     const lane = this.lanes[laneName];
     if (http && lane.waiting.length >= lane.maxWaiting) {
-      return Promise.reject(new ServiceUnavailableException(BUSY_MESSAGE[laneName]));
+      return Promise.reject(this.busyError(laneName));
     }
 
     return new Promise<T>((resolve, reject) => {
@@ -153,7 +235,7 @@ export class ApiQueueService {
         if (http) {
           timer = setTimeout(() => {
             controller.abort();
-            finish(false, new RequestTimeoutException('Request timed out.'));
+            finish(false, this.timeoutError(laneName));
           }, lane.timeoutMs);
         }
 
@@ -167,7 +249,7 @@ export class ApiQueueService {
             (error) => {
               if (timer) clearTimeout(timer);
               if (controller.signal.aborted && !(error instanceof RequestTimeoutException)) {
-                finish(false, new RequestTimeoutException('Request timed out.'));
+                finish(false, this.timeoutError(laneName));
                 return;
               }
               finish(false, error);
