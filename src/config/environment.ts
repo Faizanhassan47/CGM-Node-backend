@@ -29,6 +29,14 @@ class Environment {
   @IsOptional() @IsString() API_QUEUE_INGEST_TIMEOUT_MS?: string;
   @IsOptional() @IsString() API_QUEUE_HEAVY_TIMEOUT_MS?: string;
   @IsOptional() @IsString() API_QUEUE_AI_TIMEOUT_MS?: string;
+  /** Burst window (ms) for the short throttler. Default 1000. */
+  @IsOptional() @IsString() THROTTLE_SHORT_TTL_MS?: string;
+  /** Max requests in the short window. Default 25. */
+  @IsOptional() @IsString() THROTTLE_SHORT_LIMIT?: string;
+  /** Sustained window (ms) for the default throttler. Default 60000. */
+  @IsOptional() @IsString() THROTTLE_TTL_MS?: string;
+  /** Max requests in the default window. Default 120. */
+  @IsOptional() @IsString() THROTTLE_LIMIT?: string;
   @IsOptional() @IsString() DB_POOL_LIMIT?: string;
   @IsOptional() @IsString() OPENAI_API_KEY?: string;
   @IsOptional() @IsString() OPENAI_MODEL?: string;

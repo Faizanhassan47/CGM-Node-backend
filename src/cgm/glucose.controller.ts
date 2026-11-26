@@ -1,4 +1,5 @@
 import { BadRequestException, Body, Controller, Get, Logger, NotFoundException, Post, Query } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Between, DataSource, FindOptionsWhere, Not, QueryRunner, Repository } from 'typeorm';
 import { AuthUser, CurrentUser } from '../common/auth-user';
@@ -162,6 +163,11 @@ export class GlucoseController {
     if (!active) throw new NotFoundException({ message: 'Sensor not found.' });
     return active;
   }
+  // CGM clients burst uploads; allow more than the global defaults.
+  @Throttle({
+    short: { limit: 15, ttl: 1_000 },
+    default: { limit: 90, ttl: 60_000 },
+  })
   @Post('measurement') async save(@CurrentUser() u: AuthUser, @Body() dto: MeasurementDto) {
     if (dto.sensorId == null) {
       throw new BadRequestException({ message: 'sensorId is required.' });
@@ -211,6 +217,10 @@ export class GlucoseController {
     return { message: 'Measurement saved successfully.', measurementTime: dto.measurementTime };
   }
 
+  @Throttle({
+    short: { limit: 10, ttl: 1_000 },
+    default: { limit: 60, ttl: 60_000 },
+  })
   @Post('sync-bulk') async bulk(@CurrentUser() u: AuthUser, @Body() dto: BulkSyncDto) {
     const s = await this.sensor(dto.sensorId, u.sub);
     // Skip invalid rows instead of failing the whole batch — otherwise one

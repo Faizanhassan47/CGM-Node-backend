@@ -1,4 +1,5 @@
 import { BadRequestException, Body, Controller, Post, Req } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { DataSource } from 'typeorm';
 import { AuthUser, CurrentUser } from '../common/auth-user';
 import { normalizeSql } from '../common/sql-helper';
@@ -9,6 +10,11 @@ export class DietAssistantController {
   constructor(private readonly db: DataSource, private readonly assistant: DietAssistantService) {}
   private q(sql: string, params?: unknown[]) { return this.db.query(normalizeSql(sql, this.db), params); }
 
+  // AI is expensive — keep chat tighter than the global API budget.
+  @Throttle({
+    short: { limit: 2, ttl: 1_000 },
+    default: { limit: 12, ttl: 60_000 },
+  })
   @Post('chat')
   async chat(
     @CurrentUser() user: AuthUser,
